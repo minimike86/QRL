@@ -1,0 +1,16 @@
+# QRL Core Dependencies
+
+# QR Code Generation
+qrcode[pil]>=7.4.2
+Pillow>=9.0.0
+
+# Screen Capture & Image Processing (Client)
+opencv-python>=4.5.4
+numpy>=1.19.0
+
+# QR Code Reading (Client)
+pyzbar>=0.1.8
+
+# Utilities
+colorama>=0.4.4
+tqdm>=4.62.0
