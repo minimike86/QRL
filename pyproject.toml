@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qrl"
+version = "0.1.0"
+description = "QR Code Data Exfiltration Proof of Concept"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Mike", email = "minimike86@gmail.com" }
+]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+keywords = ["qr-code", "exfiltration", "security", "poc", "data-transfer"]
+dependencies = [
+    "qrcode[pil]>=7.4.2",
+    "Pillow>=9.0.0",
+    "opencv-python>=4.5.4",
+    "numpy>=1.19.0",
+    "pyzbar>=0.1.8",
+    "colorama>=0.4.4",
+    "tqdm>=4.62.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/minimike86/QRL"
+"Bug Reports" = "https://github.com/minimike86/QRL/issues"
+Documentation = "https://github.com/minimike86/QRL/docs"
+"Source Code" = "https://github.com/minimike86/QRL"
+
+[tool.hatch.build.targets.wheel]
+packages = ["qrl_server", "qrl_client"]
+
+[project.scripts]
+qrl-server = "qrl_server.__main__:main"
+qrl-client = "qrl_client.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=3.0.0",
+    "coverage>=6.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "isort>=5.10.0",
+    "pylint>=2.12.0",
+    "mypy>=0.930",
+    "sphinx>=4.5.0",
+    "sphinx-rtd-theme>=1.0.0",
+]
