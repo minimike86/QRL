@@ -41,7 +41,27 @@ class TestClientGUI(unittest.TestCase):
 
     def test_default_config_loaded(self):
         self.assertAlmostEqual(self.gui.config.interval, 0.05)
-        self.assertEqual(self.gui.config.monitor, 0)
+        # Monitor defaults to mss-style 1-based index (1 = primary)
+        self.assertGreaterEqual(self.gui.config.monitor, 1)
+
+    def test_monitor_combobox_populated(self):
+        # The combobox should have at least one entry (the primary monitor)
+        labels = self.gui.monitor_combo.cget("values")
+        self.assertGreater(len(labels), 0)
+        self.assertIsNotNone(self.gui.monitor_label_var.get())
+
+    def test_monitor_selection_updates_config(self):
+        # Mimic user picking the first listed monitor
+        first = self.gui._monitor_list[0]
+        self.gui.monitor_label_var.set(first.name)
+        self.gui._on_monitor_selected()
+        self.assertEqual(self.gui.config.monitor, first.index)
+
+    def test_negative_region_is_accepted(self):
+        # Multi-monitor: a region on a secondary monitor left of primary
+        # has negative x coordinates. This must NOT be rejected.
+        self.gui.config.region = (-1280, 0, 800, 600)
+        self.gui.config.validate()  # should not raise
 
     def test_speed_preset_updates_config(self):
         self.gui._set_speed_preset(0.1)

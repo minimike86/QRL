@@ -17,7 +17,9 @@ class ClientConfig:
 
     # Capture settings — 0.05s = 20 FPS, fast enough to catch a 10 FPS QR feed
     # with at least one frame per displayed code.
-    monitor: int = 0
+    # `monitor` is the 1-based mss index (1 = primary). 0 is accepted as a
+    # legacy alias for primary.
+    monitor: int = 1
     interval: float = 0.05
     timeout: int = 300
     region: Optional[Tuple[int, int, int, int]] = None
@@ -83,7 +85,7 @@ class ClientConfig:
         errors = []
 
         if self.monitor < 0:
-            errors.append("monitor index must be non-negative")
+            errors.append("monitor index must be non-negative (0 = primary, 1+ = mss index)")
 
         if self.interval <= 0 or self.interval > 60:
             errors.append("interval must be between 0 and 60 seconds")
@@ -94,8 +96,12 @@ class ClientConfig:
         if self.region is not None:
             if len(self.region) != 4:
                 errors.append("region must be a 4-tuple (x, y, width, height)")
-            elif any(val < 0 for val in self.region):
-                errors.append("region values must be non-negative")
+            else:
+                x, y, w, h = self.region
+                # x and y can be negative on Windows when secondary monitors
+                # extend to the left of / above the primary monitor.
+                if w <= 0 or h <= 0:
+                    errors.append("region width and height must be positive")
 
         if self.progress_interval <= 0:
             errors.append("progress_interval must be positive")

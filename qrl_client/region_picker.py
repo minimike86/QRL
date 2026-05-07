@@ -65,7 +65,9 @@ def pick_region(parent: Optional[tk.Misc] = None) -> Optional[Region]:
         vw = win.winfo_screenwidth()
         vh = win.winfo_screenheight()
         vx, vy = 0, 0
-    win.geometry(f"{vw}x{vh}+{vx}+{vy}")
+    # Use signed format for geometry — Windows virtual-desktop coords can be
+    # negative when secondary monitors extend left of / above the primary.
+    win.geometry(f"{vw}x{vh}{vx:+d}{vy:+d}")
 
     canvas = tk.Canvas(win, highlightthickness=0, bg="#000000", cursor="crosshair")
     canvas.pack(fill=tk.BOTH, expand=True)

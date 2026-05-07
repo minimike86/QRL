@@ -37,6 +37,7 @@ from qrl_server.ui_theme import (
 from .capture import CaptureHandler
 from .config import ClientConfig, ClientConfigManager
 from .decoder import QRLDecoder
+from .monitors import MonitorInfo, list_monitors
 from .region_picker import pick_region
 
 
@@ -166,17 +167,24 @@ class QRLClientGUI:
             side=tk.RIGHT, padx=(0, 8)
         )
 
-        # Monitor selector (only relevant when no region is picked)
+        # Screen selector — used when no custom region is picked.
+        # Populated with friendly names from monitors.list_monitors().
         mon_row = ttk.Frame(region_card, style="Card.TFrame")
         mon_row.pack(fill=tk.X, pady=(8, 0))
-        ttk.Label(mon_row, text="Monitor:", style="Card.TLabel").pack(side=tk.LEFT)
-        self.monitor_var = tk.IntVar(value=self.config.monitor)
-        ttk.Spinbox(
-            mon_row, from_=0, to=5, width=4, textvariable=self.monitor_var
-        ).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Label(
-            mon_row, text="0 = primary", style="CardMuted.TLabel"
-        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(mon_row, text="Screen:", style="Card.TLabel").pack(side=tk.LEFT)
+
+        self._monitor_list: list[MonitorInfo] = list_monitors()
+        labels = [m.name for m in self._monitor_list] or ["Primary"]
+        self.monitor_label_var = tk.StringVar(value=labels[0])
+        self.monitor_combo = ttk.Combobox(
+            mon_row,
+            textvariable=self.monitor_label_var,
+            values=labels,
+            state="readonly",
+            width=42,
+        )
+        self.monitor_combo.pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
+        self.monitor_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_monitor_selected())
 
         # === 3. Capture speed (preset chips) ===
         speed_card = card(parent)
@@ -338,7 +346,6 @@ class QRLClientGUI:
 
     def _bind_events(self) -> None:
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
-        self.monitor_var.trace("w", lambda *_: self._update_config_from_ui())
         self.timeout_var.trace("w", lambda *_: self._update_config_from_ui())
 
     # ------------------------------------------------------------------
@@ -353,15 +360,31 @@ class QRLClientGUI:
 
     def _update_config_from_ui(self) -> None:
         try:
-            self.config.monitor = self.monitor_var.get()
             self.config.timeout = self.timeout_var.get()
         except (tk.TclError, ValueError):
             pass
 
+    def _on_monitor_selected(self) -> None:
+        label = self.monitor_label_var.get()
+        for m in self._monitor_list:
+            if m.name == label:
+                self.config.monitor = m.index
+                break
+
     def _update_ui_from_config(self) -> None:
-        self.monitor_var.set(self.config.monitor)
         self.timeout_var.set(self.config.timeout)
         self._set_speed_preset(self.config.interval, refresh_only=True)
+        # Sync the screen combobox with the saved config monitor index
+        if self._monitor_list:
+            for m in self._monitor_list:
+                if m.index == self.config.monitor:
+                    self.monitor_label_var.set(m.name)
+                    break
+            else:
+                # Saved index doesn't match any current monitor; pick primary
+                primary = next((m for m in self._monitor_list if m.is_primary), self._monitor_list[0])
+                self.config.monitor = primary.index
+                self.monitor_label_var.set(primary.name)
         if self.config.region:
             x, y, w, h = self.config.region
             self.region_summary_var.set(f"{w}×{h} at ({x}, {y})")

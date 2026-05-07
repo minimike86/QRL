@@ -73,9 +73,11 @@ class CaptureHandler:
     def _monitor_def(self, sct) -> dict:
         if self.region is not None:
             x, y, w, h = self.region
-            return {"left": x, "top": y, "width": w, "height": h}
-        # mss: monitors[0] is the union of all monitors, monitors[1] is primary
-        idx = self.monitor + 1
+            # mss accepts negative left/top (multi-monitor virtual desktop on Windows)
+            return {"left": int(x), "top": int(y), "width": int(w), "height": int(h)}
+        # `monitor` here is the 1-based mss index (1 = primary). 0 is also accepted
+        # as a legacy "primary" alias.
+        idx = self.monitor if self.monitor >= 1 else 1
         if idx >= len(sct.monitors):
             idx = 1
         return sct.monitors[idx]
