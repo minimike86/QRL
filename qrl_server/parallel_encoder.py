@@ -19,7 +19,9 @@ class ParallelQREncoder:
     """Encodes data into multiple parallel QR streams for simultaneous display."""
 
     def __init__(self, source_path: str, num_streams: int = 4,
-                 chunk_size: int = 1024, error_correction: str = "Q"):
+                 chunk_size: int = 1024, error_correction: str = "Q",
+                 box_size: Optional[int] = None,
+                 border: Optional[int] = None):
         """
         Initialize parallel encoder.
 
@@ -36,6 +38,8 @@ class ParallelQREncoder:
         self.num_streams = num_streams
         self.chunk_size = chunk_size
         self.error_correction = error_correction
+        self.box_size = box_size
+        self.border = border
 
         if num_streams < 1 or num_streams > 254:
             raise ValueError(f"num_streams must be in [1, 254], got {num_streams}")
@@ -239,7 +243,10 @@ class ParallelQREncoder:
 
     def generate_manifest_qr(self) -> Image.Image:
         payload = build_manifest_chunk(self.build_manifest())
-        return QRGenerator(payload, error_correction=self.error_correction).generate()
+        return QRGenerator(
+            payload, error_correction=self.error_correction,
+            border=self.border, box_size=self.box_size,
+        ).generate()
 
     def calculate_theoretical_throughput(self, display_duration: float) -> dict:
         """

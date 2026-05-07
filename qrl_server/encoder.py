@@ -16,7 +16,9 @@ class QRLEncoder:
     """Encodes files or directories into QR code sequences."""
 
     def __init__(self, source_path: str, chunk_size: int = 1024,
-                 qr_version: int = None, error_correction: str = "Q"):
+                 qr_version: int = None, error_correction: str = "Q",
+                 box_size: Optional[int] = None,
+                 border: Optional[int] = None):
         """
         Initialize the encoder.
 
@@ -25,11 +27,15 @@ class QRLEncoder:
             chunk_size: Size of each data chunk in bytes
             qr_version: QR code version (1-40), None for auto
             error_correction: Error correction level (L/M/Q/H)
+            box_size: Pixels per QR module (None = QRGenerator default)
+            border: Quiet-zone width in modules (None = QRGenerator default)
         """
         self.source_path = Path(source_path)
         self.chunk_size = chunk_size
         self.qr_version = qr_version
         self.error_correction = error_correction
+        self.box_size = box_size
+        self.border = border
         self._data: Optional[bytes] = None
         self._chunks: Optional[List[bytes]] = None
         self._qr_images: Optional[List[Image.Image]] = None
@@ -162,7 +168,10 @@ class QRLEncoder:
                 f"for error level '{self.error_correction}' (max: {max_size})"
             )
 
-        generator = QRGenerator(chunk, self.qr_version, self.error_correction)
+        generator = QRGenerator(
+            chunk, self.qr_version, self.error_correction,
+            border=self.border, box_size=self.box_size,
+        )
         return generator.generate()
 
     def get_total_chunks(self) -> int:
@@ -187,7 +196,10 @@ class QRLEncoder:
         from .qr_generator import QRGenerator
         manifest = self.build_manifest(num_streams=num_streams)
         payload = build_manifest_chunk(manifest)
-        return QRGenerator(payload, self.qr_version, self.error_correction).generate()
+        return QRGenerator(
+            payload, self.qr_version, self.error_correction,
+            border=self.border, box_size=self.box_size,
+        ).generate()
 
     def prefetch_qr_images(
         self,

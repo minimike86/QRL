@@ -11,26 +11,35 @@ import pytest
 
 
 _session_root = None
+_display_ok = None  # cached probe result — see note below
 
 
 def _can_open_display() -> bool:
+    """Check if Tk can open a display. Result is cached after the first call.
+
+    Windows can't reliably create/destroy multiple `tk.Tk()` instances in one
+    process — the second `Tk()` after a `destroy()` often fails with cryptic
+    Tcl init errors. Probing on every call would cause test classes to skip
+    after the first module that touched Tk."""
+    global _display_ok, _session_root
+    if _display_ok is not None:
+        return _display_ok
     try:
-        root = tk.Tk()
+        # Reuse this root as the session root instead of creating + destroying
+        # a probe — that's what the second `tk.Tk()` would fail at.
+        _session_root = tk.Tk()
+        _session_root.withdraw()
+        _display_ok = True
     except tk.TclError:
-        return False
-    root.destroy()
-    return True
+        _display_ok = False
+    return _display_ok
 
 
 @pytest.fixture(scope="session")
 def tk_root():
     """A session-scoped Tk root. Skips the test if no display is available."""
-    global _session_root
     if not _can_open_display():
         pytest.skip("No display available for tk.Tk()")
-    if _session_root is None:
-        _session_root = tk.Tk()
-        _session_root.withdraw()
     yield _session_root
     # Don't destroy at session end — interpreter teardown handles it, and
     # destroying here can crash on Windows.
@@ -38,10 +47,6 @@ def tk_root():
 
 def get_session_root():
     """Module-level accessor for unittest-style tests that can't take fixtures."""
-    global _session_root
     if not _can_open_display():
         return None
-    if _session_root is None:
-        _session_root = tk.Tk()
-        _session_root.withdraw()
     return _session_root

@@ -53,6 +53,18 @@ QUALITY_PRESETS = [
     ("Robust", "H", 1140),
 ]
 
+# Pixel-density presets — (label, pixels per QR module).
+# Higher density = sharper QRs (more pixels per black/white cell), bigger
+# native render, slower to generate, more bytes in PDF/video exports.
+# For live screen-display this also gives the client more pixels per module
+# to lock onto, which helps when capture is at a lower resolution than
+# the QR display.
+DENSITY_PRESETS = [
+    ("Standard (10 px/module)", 10),
+    ("High (16 px/module)", 16),
+    ("Extra (24 px/module)", 24),
+]
+
 # Parallel mode presets — value is either an int num_streams or "auto".
 # "auto" computes a fill-the-screen grid at display time.
 MODE_PRESETS = [
@@ -253,10 +265,33 @@ class QRLServerGUI:
             btn.pack(side=tk.LEFT, padx=(0, 6))
             self.quality_buttons.append(btn)
 
-        # === 4. Throughput mode (single vs grid) ===
+        # === 4. Pixel density ===
+        density_card = card(parent)
+        density_card.pack(fill=tk.X, pady=(0, 12))
+        section_heading(density_card, "4. QR pixel density", on_card=True).pack(anchor="w")
+        ttk.Label(
+            density_card,
+            text="Pixels per QR module. Higher = sharper, harder for the client to misread.",
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
+        density_chips = ttk.Frame(density_card, style="Card.TFrame")
+        density_chips.pack(fill=tk.X)
+        self.density_buttons: List[ttk.Button] = []
+        for label, box_size in DENSITY_PRESETS:
+            btn = ttk.Button(
+                density_chips,
+                text=label,
+                style="Chip.TButton",
+                command=lambda b=box_size: self._set_density_preset(b),
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            self.density_buttons.append(btn)
+
+        # === 5. Throughput mode (single vs grid) ===
         mode_card = card(parent)
         mode_card.pack(fill=tk.X, pady=(0, 12))
-        section_heading(mode_card, "4. Throughput mode", on_card=True).pack(anchor="w")
+        section_heading(mode_card, "5. Throughput mode", on_card=True).pack(anchor="w")
         ttk.Label(
             mode_card,
             text="Display multiple QRs at once for parallel decoding.",
@@ -414,6 +449,7 @@ class QRLServerGUI:
             self._log(f"Using default config: {e}")
         self._set_speed_preset(self.config.duration, refresh_only=True)
         self._set_quality_preset(self.config.error_correction, self.config.chunk_size, refresh_only=True)
+        self._set_density_preset(self.config.qr_box_size, refresh_only=True)
         self._set_mode_preset(1, refresh_only=True)
         self._refresh_summary()
 
@@ -437,6 +473,15 @@ class QRLServerGUI:
             self.config.chunk_size = chunk_size
         for btn, (_, level, _) in zip(self.quality_buttons, QUALITY_PRESETS):
             style = "ChipActive.TButton" if level == self.config.error_correction else "Chip.TButton"
+            btn.configure(style=style)
+        self._refresh_summary()
+
+    def _set_density_preset(self, box_size: int, refresh_only: bool = False) -> None:
+        """Pixels per QR module. Affects native render size and on-screen sharpness."""
+        if not refresh_only:
+            self.config.qr_box_size = box_size
+        for btn, (_, value) in zip(self.density_buttons, DENSITY_PRESETS):
+            style = "ChipActive.TButton" if value == self.config.qr_box_size else "Chip.TButton"
             btn.configure(style=style)
         self._refresh_summary()
 
@@ -677,6 +722,8 @@ class QRLServerGUI:
                     num_streams=streams,
                     chunk_size=self.config.chunk_size,
                     error_correction=self.config.error_correction,
+                    box_size=self.config.qr_box_size,
+                    border=self.config.qr_border,
                 )
                 self.parallel_encoder.prepare_parallel_streams()
                 self.total_chunks = self.parallel_encoder.get_total_chunks()
@@ -695,6 +742,8 @@ class QRLServerGUI:
                     self.current_file,
                     chunk_size=self.config.chunk_size,
                     error_correction=self.config.error_correction,
+                    box_size=self.config.qr_box_size,
+                    border=self.config.qr_border,
                 )
                 self.total_chunks = self.encoder.prepare_chunks()
                 self._log_main(f"  {self.total_chunks:,} chunks ready")
@@ -1089,23 +1138,27 @@ class QRLServerGUI:
                 canvas.paste(qr, (ox, oy))
         return canvas
 
-    @staticmethod
-    def _resize_to_clean_multiple(qr_img: Image.Image, target_px: int) -> Image.Image:
-        """Resize a QR image to the largest integer multiple of its native
-        size that fits target_px (or the largest integer divisor if shrinking).
-        Guarantees uniform module sizes."""
+    def _resize_to_clean_multiple(
+        self, qr_img: Image.Image, target_px: int, box_size: Optional[int] = None
+    ) -> Image.Image:
+        """Resize a QR image so every module is the same size in the output.
+
+        The image was rendered at `box_size` pixels per module. The QR has
+        `module_count = native // box_size` modules per side (including the
+        quiet zone border). To preserve uniform modules in the output we must
+        snap target_px to a multiple of `module_count`."""
         native = qr_img.size[0]  # QR images are square
         if native == 0:
             return qr_img
-        if target_px >= native:
-            multiplier = target_px // native
-            new_size = multiplier * native
-            if new_size == native:
-                return qr_img
-            return qr_img.resize((new_size, new_size), Image.Resampling.NEAREST)
-        # Slot smaller than native — shrink to the largest 1/N of native that fits
-        divisor = max(1, -(-native // target_px))  # ceil(native / target_px)
-        new_size = native // divisor
+        if box_size is None:
+            box_size = self.config.qr_box_size if self.config else QRGenerator.DEFAULT_BOX_SIZE
+        module_count = max(1, native // max(box_size, 1))
+
+        # Pick the largest integer pixels-per-module that fits target_px
+        per_module = max(1, target_px // module_count)
+        new_size = per_module * module_count
+        if new_size == native:
+            return qr_img
         return qr_img.resize((new_size, new_size), Image.Resampling.NEAREST)
 
     # ------------------------------------------------------------------
