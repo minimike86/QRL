@@ -44,9 +44,11 @@ class TestServerGUI(unittest.TestCase):
         self.assertIsNone(self.gui.encoder)
 
     def test_default_config_loaded(self):
-        self.assertEqual(self.gui.config.chunk_size, 1490)
+        # Default is now "Robust" (H-level): better tolerance for
+        # screen-capture compression artefacts and partial occlusion.
+        self.assertEqual(self.gui.config.chunk_size, 1140)
         self.assertAlmostEqual(self.gui.config.duration, 0.1)
-        self.assertEqual(self.gui.config.error_correction, "Q")
+        self.assertEqual(self.gui.config.error_correction, "H")
 
     def test_speed_preset_updates_config(self):
         self.gui._set_speed_preset(0.05)
