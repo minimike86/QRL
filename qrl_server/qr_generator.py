@@ -29,6 +29,15 @@ from qrcode.constants import (
 )
 
 
+def _pool_worker_generate(args) -> Image.Image:
+    """Top-level worker callable for ProcessPoolExecutor (must be picklable).
+
+    args: tuple of (chunk_bytes, version_or_None, error_correction)
+    """
+    chunk, version, error_correction = args
+    return QRGenerator(chunk, version, error_correction).generate()
+
+
 class QRGenerator:
     """Generates QR codes from binary data."""
 

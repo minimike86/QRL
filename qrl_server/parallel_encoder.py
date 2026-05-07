@@ -11,7 +11,7 @@ from typing import List, Dict, Tuple, Optional
 from PIL import Image
 import math
 
-from .chunk import ChunkManager
+from .chunk import ChunkManager, build_manifest_chunk
 from .qr_generator import QRGenerator
 
 
@@ -25,7 +25,10 @@ class ParallelQREncoder:
 
         Args:
             source_path: Path to file/directory to encode
-            num_streams: Number of parallel streams (1, 4, 9, 16 for grid layouts)
+            num_streams: Number of parallel streams. Any positive integer up
+                to 254 (255 is reserved for the manifest channel). Need not
+                be a perfect square — non-square layouts (e.g. 10x5 = 50)
+                fill widescreen displays much better than 4x4.
             chunk_size: Base chunk size per QR code
             error_correction: Error correction level
         """
@@ -34,10 +37,8 @@ class ParallelQREncoder:
         self.chunk_size = chunk_size
         self.error_correction = error_correction
 
-        # Validate stream count for grid layouts
-        valid_streams = [1, 4, 9, 16]  # 1x1, 2x2, 3x3, 4x4
-        if num_streams not in valid_streams:
-            raise ValueError(f"num_streams must be one of {valid_streams}")
+        if num_streams < 1 or num_streams > 254:
+            raise ValueError(f"num_streams must be in [1, 254], got {num_streams}")
 
         self._data = None
         self._stream_chunks = {}  # {stream_id: [chunks]}
@@ -142,48 +143,61 @@ class ParallelQREncoder:
         from .chunk import pack_header
         return pack_header(stream_id, sequence, total_chunks) + data
 
-    def generate_qr_grid(self, chunk_index: int) -> List[List[Image.Image]]:
-        """
-        Generate QR grid for a specific chunk index across all streams.
+    def generate_qr_set(self, chunk_index: int) -> List[Image.Image]:
+        """Return one QR image per stream for the given chunk index.
 
-        Args:
-            chunk_index: Which chunk set to generate (0 to max_chunks-1)
-
-        Returns:
-            2D list of PIL Images arranged in grid format
-        """
+        Display layout (cols × rows) is the caller's responsibility — let the
+        UI compute grid shape based on actual screen dimensions, not assume
+        square layouts."""
         if not self._stream_chunks:
             raise ValueError("Streams not prepared. Call prepare_parallel_streams() first.")
 
-        grid_size = int(math.sqrt(self.num_streams))
-        qr_grid = []
+        images: List[Image.Image] = []
+        for stream_id in range(self.num_streams):
+            chunks = self._stream_chunks.get(stream_id, [])
+            if chunk_index < len(chunks):
+                chunk_data = chunks[chunk_index]
+                if not QRGenerator.validate_chunk_size(len(chunk_data), self.error_correction):
+                    raise ValueError(f"Chunk too large for QR code: {len(chunk_data)} bytes")
+                generator = QRGenerator(chunk_data, error_correction=self.error_correction)
+                images.append(generator.generate())
+            elif chunks:
+                # Stream finished early — re-emit its last chunk. Decoder
+                # deduplicates, and re-sending real chunks gives the client
+                # extra recovery opportunities.
+                last = chunks[-1]
+                generator = QRGenerator(last, error_correction=self.error_correction)
+                images.append(generator.generate())
+            else:
+                # Empty stream — emit the manifest as harmless filler
+                images.append(self.generate_manifest_qr())
+        return images
 
-        for row in range(grid_size):
-            qr_row = []
-            for col in range(grid_size):
-                stream_id = row * grid_size + col
+    def generate_qr_grid(self, chunk_index: int) -> List[List[Image.Image]]:
+        """Backwards-compatible square-grid wrapper around generate_qr_set."""
+        flat = self.generate_qr_set(chunk_index)
+        grid_size = int(math.sqrt(len(flat)))
+        if grid_size * grid_size != len(flat):
+            # Not a perfect square — return as a single row
+            return [flat]
+        return [flat[r * grid_size:(r + 1) * grid_size] for r in range(grid_size)]
 
-                # Get chunk for this stream at this index
-                if (stream_id in self._stream_chunks and
-                    chunk_index < len(self._stream_chunks[stream_id])):
-                    chunk_data = self._stream_chunks[stream_id][chunk_index]
+    def prefetch_all_qr_sets(self, max_workers: Optional[int] = None) -> List[List[Image.Image]]:
+        """Pre-generate every QR for every chunk index, in parallel processes.
 
-                    # Validate chunk size
-                    if not QRGenerator.validate_chunk_size(len(chunk_data), self.error_correction):
-                        raise ValueError(f"Chunk too large for QR code: {len(chunk_data)} bytes")
+        Returns a list of length total_chunks_per_stream where each entry
+        is a list of num_streams QR images."""
+        if not self._stream_chunks:
+            raise ValueError("Streams not prepared.")
 
-                    generator = QRGenerator(chunk_data, error_correction=self.error_correction)
-                    qr_image = generator.generate()
-                else:
-                    # Generate empty/padding QR for streams that have finished
-                    padding_data = f"STREAM_{stream_id}_COMPLETE".encode()
-                    generator = QRGenerator(padding_data, error_correction=self.error_correction)
-                    qr_image = generator.generate()
+        from concurrent.futures import ThreadPoolExecutor
+        import os
 
-                qr_row.append(qr_image)
-            qr_grid.append(qr_row)
+        if max_workers is None:
+            max_workers = max(2, os.cpu_count() or 4)
 
-        return qr_grid
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            return list(pool.map(self.generate_qr_set, range(self._total_chunks_per_stream)))
 
     def get_total_chunks(self) -> int:
         """Get total number of chunk sets needed."""
@@ -192,6 +206,22 @@ class ParallelQREncoder:
     def get_metadata(self) -> dict:
         """Get encoding metadata."""
         return self._metadata or {}
+
+    def build_manifest(self) -> dict:
+        return {
+            "v": 1,
+            "filename": self.source_path.name,
+            "size": len(self._data) if self._data is not None else 0,
+            "is_directory": self.source_path.is_dir() if self.source_path.exists() else False,
+            "num_streams": self.num_streams,
+            "total_chunks": self._total_chunks_per_stream,
+            "chunk_size": self.chunk_size,
+            "error_correction": self.error_correction,
+        }
+
+    def generate_manifest_qr(self) -> Image.Image:
+        payload = build_manifest_chunk(self.build_manifest())
+        return QRGenerator(payload, error_correction=self.error_correction).generate()
 
     def calculate_theoretical_throughput(self, display_duration: float) -> dict:
         """

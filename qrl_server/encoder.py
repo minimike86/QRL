@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from PIL import Image
 
-from .chunk import ChunkManager
+from .chunk import ChunkManager, build_manifest_chunk
 
 
 class QRLEncoder:
@@ -169,26 +169,65 @@ class QRLEncoder:
         """Get total number of chunks."""
         return len(self._chunks) if self._chunks else 0
 
-    def prefetch_qr_images(self, max_workers: Optional[int] = None) -> List[Image.Image]:
+    def build_manifest(self, num_streams: int = 1) -> dict:
+        """Manifest dict that the client uses to derive output filename + sanity-check."""
+        return {
+            "v": 1,
+            "filename": self.source_path.name,
+            "size": len(self._data) if self._data else 0,
+            "is_directory": self.source_path.is_dir() if self.source_path.exists() else False,
+            "num_streams": num_streams,
+            "total_chunks": self.get_total_chunks(),
+            "chunk_size": self.chunk_size,
+            "error_correction": self.error_correction,
+        }
+
+    def generate_manifest_qr(self, num_streams: int = 1) -> Image.Image:
+        """Build a single-frame QR carrying the file manifest. Use stream_id=255."""
+        from .qr_generator import QRGenerator
+        manifest = self.build_manifest(num_streams=num_streams)
+        payload = build_manifest_chunk(manifest)
+        return QRGenerator(payload, self.qr_version, self.error_correction).generate()
+
+    def prefetch_qr_images(
+        self,
+        max_workers: Optional[int] = None,
+        use_processes: Optional[bool] = None,
+    ) -> List[Image.Image]:
         """Generate every QR image upfront and cache them.
 
-        Significantly faster display since each frame is a dictionary lookup
-        instead of a fresh QR encode (~5-30 ms per code on typical hardware)."""
+        Uses a ProcessPool for batches > 50 chunks (true parallelism — qrcode
+        is pure-Python CPU-bound, so GIL severely limits ThreadPool speedup).
+        Falls back to ThreadPool for small batches where worker startup cost
+        would dominate."""
         if not self._chunks:
             raise ValueError("Chunks not prepared. Call prepare_chunks() first.")
 
-        from concurrent.futures import ThreadPoolExecutor
+        import os
+        from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+
+        from .qr_generator import _pool_worker_generate
 
         total = len(self._chunks)
         if max_workers is None:
-            import os
             max_workers = max(2, (os.cpu_count() or 4))
+        if use_processes is None:
+            use_processes = total > 50
 
-        # Threads work fine here: qrcode is mostly Python-bytecode CPU-bound but
-        # the underlying numpy/PIL operations release the GIL frequently enough
-        # that we still see 2-3x speedup on multi-core hardware.
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            self._qr_images = list(pool.map(self.generate_qr_for_chunk, range(total)))
+        args_iter = [
+            (self._chunks[i], self.qr_version, self.error_correction)
+            for i in range(total)
+        ]
+
+        Pool = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
+        try:
+            with Pool(max_workers=max_workers) as pool:
+                self._qr_images = list(pool.map(_pool_worker_generate, args_iter))
+        except Exception:
+            # ProcessPool can fail in some environments (frozen apps, certain
+            # IDE runners). Fall back to threads.
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                self._qr_images = list(pool.map(_pool_worker_generate, args_iter))
         return self._qr_images
 
     def save_qr_images(self, output_dir: str) -> List[str]:

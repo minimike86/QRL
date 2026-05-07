@@ -30,8 +30,8 @@ class TestClientGUI(unittest.TestCase):
         self.gui.is_capturing = False
         self.gui.decoder = None
         self.gui.capture_handler = None
-        self.gui.output_file = None
         self.gui.config.region = None
+        self.gui.config.output_dir = ""
         self.gui._reset_region()
 
     def test_initial_state(self):
@@ -87,26 +87,36 @@ class TestClientGUI(unittest.TestCase):
         self.assertIn("800", self.gui.region_summary_var.get())
         self.assertIn("600", self.gui.region_summary_var.get())
 
-    def test_button_states_idle_no_output(self):
-        self.gui._update_button_states()
-        self.assertEqual(str(self.gui.start_btn["state"]), "disabled")
-        self.assertEqual(str(self.gui.stop_btn["state"]), "disabled")
-
-    def test_button_states_idle_with_output(self):
-        self.gui.output_file = "/tmp/decoded.bin"
+    def test_button_states_idle(self):
+        # Output folder always has a default, so Start is always enabled when idle.
         self.gui._update_button_states()
         self.assertEqual(str(self.gui.start_btn["state"]), "normal")
+        self.assertEqual(str(self.gui.stop_btn["state"]), "disabled")
+
+    def test_button_states_capturing(self):
+        self.gui.is_capturing = True
+        self.gui._update_button_states()
+        self.assertEqual(str(self.gui.start_btn["state"]), "disabled")
+        self.assertEqual(str(self.gui.stop_btn["state"]), "normal")
+        self.gui.is_capturing = False  # restore so other tests see idle state
 
     def test_log_appends(self):
         self.gui._log("client test message")
         contents = self.gui.log_text.get("1.0", tk.END)
         self.assertIn("client test message", contents)
 
-    def test_capture_without_output_file_shows_error(self):
-        self.gui.output_file = None
-        with patch("tkinter.messagebox.showerror") as mock_err:
-            self.gui._start_capture()
-        mock_err.assert_called()
+    def test_default_output_dir_is_resolvable(self):
+        # No more "missing output file" — there's always a default folder.
+        resolved = self.gui.config.resolve_output_dir()
+        self.assertTrue(resolved)  # non-empty
+        self.assertIn("qrl", resolved.lower())
+
+    def test_browse_folder_updates_output_dir(self):
+        # Simulate the user picking a folder via the dialog
+        with patch("tkinter.filedialog.askdirectory", return_value="/tmp/test_output"):
+            self.gui._browse_output_file()
+        self.assertEqual(self.gui.output_dir, "/tmp/test_output")
+        self.assertEqual(self.gui.output_path_var.get(), "/tmp/test_output")
 
     def test_status_pill_exists(self):
         self.assertIsNotNone(self.gui.status_label)

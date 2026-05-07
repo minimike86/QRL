@@ -9,12 +9,20 @@ from qrl_server.parallel_encoder import ParallelQRDecoder, ParallelQREncoder
 
 
 class TestParallelEncoderValidation(unittest.TestCase):
-    def test_rejects_invalid_stream_count(self):
+    def test_rejects_zero_or_negative_stream_count(self):
         with self.assertRaises(ValueError):
-            ParallelQREncoder("anything", num_streams=3)
+            ParallelQREncoder("anything", num_streams=0)
+        with self.assertRaises(ValueError):
+            ParallelQREncoder("anything", num_streams=-1)
 
-    def test_accepts_supported_stream_counts(self):
-        for n in (1, 4, 9, 16):
+    def test_rejects_above_reserved_manifest_id(self):
+        # 255 is reserved for the manifest channel
+        with self.assertRaises(ValueError):
+            ParallelQREncoder("anything", num_streams=255)
+
+    def test_accepts_arbitrary_stream_counts(self):
+        # Non-square layouts (e.g. 10x5 = 50) are now allowed
+        for n in (1, 3, 4, 7, 9, 16, 50, 100, 254):
             ParallelQREncoder("anything", num_streams=n)
 
 

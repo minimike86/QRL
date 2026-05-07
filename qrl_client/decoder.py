@@ -12,13 +12,24 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 # Shared wire format with the server. Both packages ship together.
-from qrl_server.chunk import HEADER_SIZE, unpack_header  # noqa: F401
+from qrl_server.chunk import (
+    HEADER_SIZE,  # noqa: F401
+    MANIFEST_STREAM_ID,
+    parse_manifest_payload,
+    unpack_header,
+)
 
 from .qr_reader import QRReader
 
 
 class QRLDecoder:
-    """Decodes QR sequences back into files."""
+    """Decodes QR sequences back into files.
+
+    `output_path` may be either:
+      * a file path  — output is always written there (legacy mode)
+      * a directory  — output filename is read from the stream's manifest
+                       (or "decoded.bin" if no manifest is seen)
+    """
 
     def __init__(self, output_path: str, timeout: int = 300):
         self.output_path = output_path
@@ -29,6 +40,11 @@ class QRLDecoder:
         self._streams: Dict[int, Dict[int, bytes]] = {}
         # totals[stream_id] = expected number of chunks in that stream
         self._totals: Dict[int, int] = {}
+
+        # Manifest received from a stream_id=255 chunk (if any)
+        self._manifest: Optional[dict] = None
+        # Final resolved output path (only known after manifest seen, if applicable)
+        self._resolved_output_path: Optional[str] = None
 
         self._started_at: Optional[float] = None
         self._frames_processed = 0
@@ -64,6 +80,16 @@ class QRLDecoder:
         if parsed is None:
             return
         stream_id, sequence, total, data = parsed
+
+        # Manifest channel — extract metadata, don't store as data
+        if stream_id == MANIFEST_STREAM_ID:
+            if self._manifest is None:
+                try:
+                    self._manifest = parse_manifest_payload(data)
+                except Exception:
+                    pass  # ignore malformed manifest
+            return
+
         # Same stream may be re-seen with same total — that's fine; mismatched totals
         # are protocol errors, but we tolerate them by trusting the latest.
         self._totals[stream_id] = total
@@ -82,7 +108,37 @@ class QRLDecoder:
         for stream_id, total in self._totals.items():
             if len(self._streams.get(stream_id, {})) < total:
                 return False
+        # If manifest declared more streams than we've received, wait for them
+        if self._manifest is not None:
+            expected_streams = self._manifest.get("num_streams", 0)
+            if expected_streams and len(self._totals) < expected_streams:
+                return False
         return True
+
+    def get_manifest(self) -> Optional[dict]:
+        """Returns the parsed manifest dict if one has been seen, else None."""
+        return self._manifest
+
+    def resolve_output_path(self) -> str:
+        """Pick the actual output path, honoring the manifest filename when
+        the configured output_path is a directory."""
+        if self._resolved_output_path is not None:
+            return self._resolved_output_path
+
+        out = Path(self.output_path)
+        # If output_path is a directory (existing or has no suffix), join with
+        # the manifest filename. Otherwise treat it as the literal target.
+        treat_as_dir = out.is_dir() or (not out.exists() and out.suffix == "")
+        if treat_as_dir:
+            filename = (self._manifest or {}).get("filename") if self._manifest else None
+            if not filename:
+                filename = "decoded.bin"
+            # Strip path separators from manifest filename for safety
+            filename = Path(filename).name
+            self._resolved_output_path = str(out / filename)
+        else:
+            self._resolved_output_path = str(out)
+        return self._resolved_output_path
 
     def get_progress(self) -> dict:
         total = sum(self._totals.values()) if self._totals else 0
@@ -149,6 +205,13 @@ class QRLDecoder:
             for seq in range(self._totals[stream_id]):
                 parts.append(chunks[seq])
         data = b"".join(parts)
-        out = Path(self.output_path)
+
+        # Manifest tells us the original size — strip stream-padding if present
+        if self._manifest is not None:
+            declared_size = self._manifest.get("size")
+            if isinstance(declared_size, int) and 0 < declared_size <= len(data):
+                data = data[:declared_size]
+
+        out = Path(self.resolve_output_path())
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(data)

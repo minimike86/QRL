@@ -17,6 +17,8 @@ from typing import List, Optional
 
 from PIL import Image, ImageTk
 
+from qrl_client.monitors import MonitorInfo, list_monitors, monitor_at_point, primary_monitor
+
 from .config import ConfigManager, ServerConfig
 from .encoder import QRLEncoder
 from .parallel_encoder import ParallelQREncoder
@@ -51,13 +53,29 @@ QUALITY_PRESETS = [
     ("Robust", "H", 1140),
 ]
 
-# Parallel mode presets
+# Parallel mode presets — value is either an int num_streams or "auto".
+# "auto" computes a fill-the-screen grid at display time.
 MODE_PRESETS = [
     ("Single stream", 1),
     ("2×2 grid (4×)", 4),
     ("3×3 grid (9×)", 9),
     ("4×4 grid (16×)", 16),
+    ("Auto-fit screen", "auto"),
 ]
+
+
+def auto_grid_for_screen(screen_w: int, screen_h: int,
+                         qr_target_px: int = 240, spacing: int = 8) -> tuple:
+    """How many QRs fit on a screen of (w, h) at the given per-QR pixel target?
+
+    Returns (cols, rows). Reserves a small margin for window chrome / taskbar.
+    """
+    margin = 24
+    usable_w = max(screen_w - margin, qr_target_px)
+    usable_h = max(screen_h - margin, qr_target_px)
+    cols = max(1, (usable_w + spacing) // (qr_target_px + spacing))
+    rows = max(1, (usable_h + spacing) // (qr_target_px + spacing))
+    return int(cols), int(rows)
 
 
 class QRLServerGUI:
@@ -65,10 +83,19 @@ class QRLServerGUI:
 
     def __init__(self, master: Optional[tk.Misc] = None):
         # Tests share a single Tk root via a Toplevel; production creates its own.
+        # When standalone, prefer TkinterDnD.Tk so file drag-and-drop works.
         if master is None:
-            self.root = tk.Tk()
+            try:
+                from tkinterdnd2 import TkinterDnD
+
+                self.root = TkinterDnD.Tk()
+                self._dnd_available = True
+            except Exception:
+                self.root = tk.Tk()
+                self._dnd_available = False
         else:
             self.root = tk.Toplevel(master)
+            self._dnd_available = False
         self.root.title("QRL Server — QR Stream Encoder")
         self.root.geometry("1100x780")
         self.root.minsize(960, 680)
@@ -87,12 +114,24 @@ class QRLServerGUI:
         self.use_parallel_encoding = False
         self.total_chunks = 0
 
+        # Grid/mode state
+        # _mode_value is one of: int (num_streams), "auto"
+        self._mode_value = 1
+        # _grid_cols/_grid_rows are the actual layout used by display loop.
+        # For "auto" mode, these are computed at display start from the
+        # server-window's current monitor dimensions.
+        self._grid_cols = 1
+        self._grid_rows = 1
+
         # Display state
         self.current_qr_index = 0
         self.display_cycle = 0
         self.qr_window: Optional[tk.Toplevel] = None
         self.qr_display_label: Optional[tk.Label] = None
         self.qr_photo: Optional[ImageTk.PhotoImage] = None
+        # Cached pre-generated QR sets for parallel mode
+        self._cached_qr_sets: Optional[List[List[Image.Image]]] = None
+        self._manifest_qr_image: Optional[Image.Image] = None
 
         self._build_ui()
         self._bind_events()
@@ -148,17 +187,22 @@ class QRLServerGUI:
         file_row = ttk.Frame(file_card, style="Card.TFrame")
         file_row.pack(fill=tk.X)
         self.file_path_var = tk.StringVar()
-        ttk.Entry(file_row, textvariable=self.file_path_var).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, ipady=2
-        )
+        self.file_entry = ttk.Entry(file_row, textvariable=self.file_path_var)
+        self.file_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
         ttk.Button(file_row, text="Browse…", command=self._browse_file).pack(
             side=tk.LEFT, padx=(8, 0)
         )
 
-        self.file_info_var = tk.StringVar(value="")
+        # Drag-and-drop hint + wire up DND on the file entry if available
+        hint = "Drag a file here or use Browse." if self._dnd_available else ""
+        self.file_info_var = tk.StringVar(value=hint)
         ttk.Label(file_card, textvariable=self.file_info_var, style="CardMuted.TLabel").pack(
             anchor="w", pady=(8, 0)
         )
+
+        if self._dnd_available:
+            self._wire_drag_and_drop(file_card)
+            self._wire_drag_and_drop(self.file_entry)
 
         # === 2. Speed ===
         speed_card = card(parent)
@@ -385,18 +429,50 @@ class QRLServerGUI:
             btn.configure(style=style)
         self._refresh_summary()
 
-    def _set_mode_preset(self, num_streams: int, refresh_only: bool = False) -> None:
+    def _set_mode_preset(self, mode_value, refresh_only: bool = False) -> None:
+        """mode_value is either an int (explicit num_streams) or "auto"."""
         if not refresh_only:
-            self.use_parallel_encoding = num_streams > 1
-            self._mode_streams = num_streams
-            grid_size = int(num_streams ** 0.5)
-            self.config.qr_grid_size = grid_size
-        else:
-            self._mode_streams = getattr(self, "_mode_streams", 1)
+            self._mode_value = mode_value
+            if mode_value == "auto":
+                # Compute now using the server window's current monitor; will
+                # be recomputed at display start in case the window moved.
+                cols, rows = self._auto_grid_for_current_monitor()
+                self._grid_cols, self._grid_rows = cols, rows
+                self.use_parallel_encoding = (cols * rows) > 1
+                self._mode_streams = cols * rows
+            else:
+                num = int(mode_value)
+                self.use_parallel_encoding = num > 1
+                self._mode_streams = num
+                if num == 1:
+                    self._grid_cols = self._grid_rows = 1
+                else:
+                    side = int(num ** 0.5)
+                    if side * side == num:
+                        self._grid_cols = self._grid_rows = side
+                    else:
+                        # Non-perfect-square explicit value — pack as a row
+                        self._grid_cols, self._grid_rows = num, 1
+            self.config.qr_grid_size = max(self._grid_cols, self._grid_rows)
         for btn, (_, value) in zip(self.mode_buttons, MODE_PRESETS):
-            style = "ChipActive.TButton" if value == self._mode_streams else "Chip.TButton"
+            style = "ChipActive.TButton" if value == self._mode_value else "Chip.TButton"
             btn.configure(style=style)
         self._refresh_summary()
+
+    def _auto_grid_for_current_monitor(self) -> tuple:
+        """Find the monitor under the server window and compute (cols, rows)."""
+        try:
+            self.root.update_idletasks()
+            cx = self.root.winfo_x() + self.root.winfo_width() // 2
+            cy = self.root.winfo_y() + self.root.winfo_height() // 2
+            mon = monitor_at_point(cx, cy) or primary_monitor()
+            if mon is None:
+                return 1, 1
+            return auto_grid_for_screen(
+                mon.width, mon.height, qr_target_px=self.config.qr_physical_size
+            )
+        except Exception:
+            return 1, 1
 
     def _refresh_summary(self) -> None:
         if not self.current_file:
@@ -406,15 +482,57 @@ class QRLServerGUI:
         size_mb = size / (1024 * 1024)
         streams = getattr(self, "_mode_streams", 1)
         bytes_per_sec = (self.config.chunk_size * streams) / max(self.config.duration, 1e-6)
+        layout = (
+            f"{self._grid_cols}×{self._grid_rows} grid"
+            if streams > 1
+            else "single QR"
+        )
         self.summary_var.set(
             f"{Path(self.current_file).name}  ·  {size_mb:.2f} MB  ·  "
-            f"{self.config.chunk_size} B/QR @ {1/self.config.duration:.0f} FPS × {streams} stream{'s' if streams > 1 else ''}  →  "
+            f"{self.config.chunk_size} B/QR @ {1/self.config.duration:.0f} FPS × {layout}  →  "
             f"~{bytes_per_sec/1024:.1f} KB/s"
         )
 
     # ------------------------------------------------------------------
     # File picker
     # ------------------------------------------------------------------
+    def _wire_drag_and_drop(self, widget: tk.Widget) -> None:
+        """Register a widget to accept dropped files."""
+        try:
+            from tkinterdnd2 import DND_FILES
+        except Exception:
+            return
+
+        def _on_drop(event):
+            # event.data is a Tk-quoted list of paths; pick the first
+            data = event.data.strip()
+            if data.startswith("{") and data.endswith("}"):
+                # Path with spaces is wrapped in {}
+                data = data[1:-1]
+            else:
+                # Multiple paths separated by spaces — take first
+                data = data.split()[0] if data else ""
+            data = data.strip().strip('"')
+            if not data:
+                return
+            self._set_current_file(data)
+
+        widget.drop_target_register(DND_FILES)
+        widget.dnd_bind("<<Drop>>", _on_drop)
+
+    def _set_current_file(self, path: str) -> None:
+        """Common handler for file selection from any source (browse or DND)."""
+        p = Path(path)
+        if not p.exists():
+            messagebox.showerror("File not found", path)
+            return
+        self.file_path_var.set(str(p))
+        self.current_file = str(p)
+        size = p.stat().st_size
+        self.file_info_var.set(f"{size:,} bytes  ·  {size/1024/1024:.2f} MB")
+        self._refresh_summary()
+        self._update_button_states()
+
     def _browse_file(self) -> None:
         filename = filedialog.askopenfilename(
             title="Select file to encode",
@@ -426,12 +544,7 @@ class QRLServerGUI:
             ],
         )
         if filename:
-            self.file_path_var.set(filename)
-            self.current_file = filename
-            size = Path(filename).stat().st_size
-            self.file_info_var.set(f"{size:,} bytes  ·  {size/1024/1024:.2f} MB")
-            self._refresh_summary()
-            self._update_button_states()
+            self._set_current_file(filename)
 
     # ------------------------------------------------------------------
     # Encode workflow
@@ -466,8 +579,20 @@ class QRLServerGUI:
                     f"File ({file_size/1024/1024:.1f} MB) exceeds max ({self.config.max_file_size/1024/1024:.1f} MB)"
                 )
 
+            # If "auto" mode, recompute grid in case the user moved the window
+            # since they picked the preset.
+            if self._mode_value == "auto":
+                cols, rows = self._auto_grid_for_current_monitor()
+                self._grid_cols, self._grid_rows = cols, rows
+                self._mode_streams = cols * rows
+                self.use_parallel_encoding = self._mode_streams > 1
+                self._log(f"Auto grid for current monitor: {cols}×{rows} = {cols*rows} streams")
+
+            self._cached_qr_sets = None
+            self._manifest_qr_image = None
+
             if self.use_parallel_encoding:
-                streams = getattr(self, "_mode_streams", 4)
+                streams = self._mode_streams
                 self.parallel_encoder = ParallelQREncoder(
                     self.current_file,
                     num_streams=streams,
@@ -481,6 +606,18 @@ class QRLServerGUI:
                     f"Parallel: {streams} streams × {self.total_chunks} sets  "
                     f"→ {stats.get('kilobytes_per_second', 0):.1f} KB/s theoretical"
                 )
+                # Pre-generate every set once, in parallel
+                self.root.after(0, lambda: self.progress_label_var.set(
+                    f"Pre-generating {self.total_chunks * streams} QRs across CPU cores…"
+                ))
+                t0 = time.time()
+                self._cached_qr_sets = self.parallel_encoder.prefetch_all_qr_sets()
+                self._manifest_qr_image = self.parallel_encoder.generate_manifest_qr()
+                elapsed = time.time() - t0
+                self._log(
+                    f"Pre-generated {self.total_chunks * streams} QRs in {elapsed:.2f}s "
+                    f"({(self.total_chunks * streams)/max(elapsed, 1e-3):.0f} QR/s)"
+                )
             else:
                 self.encoder = QRLEncoder(
                     self.current_file,
@@ -492,12 +629,15 @@ class QRLServerGUI:
                     getattr(self.config, "prefetch_qr_images", True)
                     and file_size <= getattr(self.config, "prefetch_max_bytes", 5 * 1024 * 1024)
                 ):
-                    self.root.after(0, lambda: self.progress_label_var.set("Pre-generating QR images…"))
+                    self.root.after(0, lambda: self.progress_label_var.set(
+                        f"Pre-generating {self.total_chunks} QRs across CPU cores…"
+                    ))
                     t0 = time.time()
                     self.encoder.prefetch_qr_images()
+                    self._manifest_qr_image = self.encoder.generate_manifest_qr(num_streams=1)
                     elapsed = time.time() - t0
                     self._log(
-                        f"Pre-generated {self.total_chunks} QR images in {elapsed:.2f}s "
+                        f"Pre-generated {self.total_chunks} QRs in {elapsed:.2f}s "
                         f"({self.total_chunks/max(elapsed, 1e-3):.0f} QR/s)"
                     )
             self.root.after(0, self._encoding_complete)
@@ -539,8 +679,10 @@ class QRLServerGUI:
         self._update_button_states()
         self.current_qr_index = 0
         self.display_cycle = 0
+        self._showed_manifest_this_cycle = False
         self._create_qr_display_window()
-        self._show_next_qr()
+        # Schedule the first frame after the window is fully drawn
+        self.root.after(150, self._show_next_qr)
 
     def _stop_display(self) -> None:
         self.is_displaying = False
@@ -559,19 +701,29 @@ class QRLServerGUI:
         self.qr_window.title("QRL Display")
         self.qr_window.configure(bg="white")
 
-        # Reasonable default geometry; user can resize and the QR auto-fits
-        screen_w = self.qr_window.winfo_screenwidth()
-        screen_h = self.qr_window.winfo_screenheight()
-        size = min(self.config.qr_physical_size + 80, int(min(screen_w, screen_h) * 0.85))
-        x = (screen_w - size) // 2
-        y = (screen_h - size) // 2
-        self.qr_window.geometry(f"{size}x{size}+{x}+{y}")
+        # Find the monitor that the SERVER window is currently on, so the
+        # QR display opens on the same screen the user is looking at.
+        self.root.update_idletasks()
+        cx = self.root.winfo_x() + self.root.winfo_width() // 2
+        cy = self.root.winfo_y() + self.root.winfo_height() // 2
+        target = monitor_at_point(cx, cy) or primary_monitor()
 
-        if self.config.fullscreen:
-            self.qr_window.attributes("-fullscreen", True)
+        if target is not None:
+            # Position the window on that monitor first; on Windows fullscreen
+            # follows whichever screen the window is currently on.
+            self.qr_window.geometry(
+                f"{target.width}x{target.height}{target.x:+d}{target.y:+d}"
+            )
+            self._log(f"QR display targeting {target.name}")
+        else:
+            self.qr_window.geometry("800x600")
 
-        self.qr_display_label = tk.Label(self.qr_window, bg="white", text="…")
-        self.qr_display_label.pack(expand=True, fill=tk.BOTH, padx=10, pady=10)
+        # Always open fullscreen — that's the whole point of this mode
+        self.qr_window.attributes("-fullscreen", True)
+
+        self.qr_display_label = tk.Label(self.qr_window, bg="white", text="…",
+                                          font=self.fonts["body"])
+        self.qr_display_label.pack(expand=True, fill=tk.BOTH)
 
         def _close():
             self.is_displaying = False
@@ -586,6 +738,9 @@ class QRLServerGUI:
 
         self.qr_window.protocol("WM_DELETE_WINDOW", _close)
         self.qr_window.bind("<Escape>", lambda _e: _close())
+        self.qr_window.bind("<F11>", lambda _e: self.qr_window.attributes(
+            "-fullscreen", not self.qr_window.attributes("-fullscreen")
+        ))
         self.qr_window.lift()
         self.qr_window.focus_force()
 
@@ -593,26 +748,42 @@ class QRLServerGUI:
         if not self.is_displaying or not self.qr_window:
             return
         try:
+            # At the start of each cycle, show the manifest QR once so a
+            # late-joining client can pick up the filename.
+            if (
+                not self._showed_manifest_this_cycle
+                and self._manifest_qr_image is not None
+            ):
+                self._showed_manifest_this_cycle = True
+                self._render_single(self._manifest_qr_image)
+                self.qr_window.title("QRL Display  ·  manifest")
+                if self.is_displaying:
+                    self.root.after(
+                        max(int(self.config.duration * 1000), 1), self._show_next_qr
+                    )
+                return
+
             if self.use_parallel_encoding and self.parallel_encoder:
-                grid = self.parallel_encoder.generate_qr_grid(self.current_qr_index)
-                qr_images = [img for row in grid for img in row]
-                grid_size = int(getattr(self, "_mode_streams", 4) ** 0.5)
+                if self._cached_qr_sets is not None:
+                    qr_images = self._cached_qr_sets[self.current_qr_index]
+                else:
+                    qr_images = self.parallel_encoder.generate_qr_set(self.current_qr_index)
+                cols, rows = self._grid_cols, self._grid_rows
                 self.current_qr_index += 1
             else:
-                grid_size = self.config.qr_grid_size
+                cols, rows = self._grid_cols, self._grid_rows
+                cells = cols * rows
                 qr_images = []
                 cached = self.encoder.get_qr_images() if self.encoder else None
-                for i in range(grid_size * grid_size):
+                for i in range(cells):
                     chunk_idx = (self.current_qr_index + i) % self.total_chunks
                     qr_images.append(
                         cached[chunk_idx] if cached else self.encoder.generate_qr_for_chunk(chunk_idx)
                     )
-                self.current_qr_index += grid_size * grid_size
+                self.current_qr_index += cells
 
-            combined = self._compose_grid(qr_images, grid_size)
-            self.qr_photo = ImageTk.PhotoImage(combined)
-            self.qr_display_label.configure(image=self.qr_photo)
-            self.qr_display_label.image = self.qr_photo
+            combined = self._compose_grid(qr_images, cols, rows)
+            self._render_single(combined)
 
             # Progress + window title
             pct = (self.current_qr_index / max(self.total_chunks, 1)) * 100
@@ -629,6 +800,7 @@ class QRLServerGUI:
             if self.current_qr_index >= self.total_chunks:
                 self.current_qr_index = 0
                 self.display_cycle += 1
+                self._showed_manifest_this_cycle = False  # show manifest again next cycle
                 if not self.config.repeat:
                     self.is_displaying = False
                     self._update_status("Display complete")
@@ -647,31 +819,41 @@ class QRLServerGUI:
             self._update_button_states()
             set_status(self.status_label, "error", "Display error")
 
-    def _compose_grid(self, qr_images: List[Image.Image], grid_size: int) -> Image.Image:
+    def _render_single(self, image: Image.Image) -> None:
+        """Render a single PIL image, fit to the display window."""
+        win_w = max(self.qr_window.winfo_width(), 200)
+        win_h = max(self.qr_window.winfo_height(), 200)
+        # Scale image to fit while preserving aspect ratio
+        iw, ih = image.size
+        scale = min(win_w / iw, win_h / ih, 1.0) if iw and ih else 1.0
+        if scale < 1.0:
+            image = image.resize((int(iw * scale), int(ih * scale)), Image.Resampling.NEAREST)
+        self.qr_photo = ImageTk.PhotoImage(image)
+        self.qr_display_label.configure(image=self.qr_photo, text="")
+        self.qr_display_label.image = self.qr_photo
+
+    def _compose_grid(self, qr_images: List[Image.Image], cols: int, rows: int) -> Image.Image:
+        """Compose `qr_images` into a `cols × rows` grid sized to the display window."""
         if not qr_images:
             raise ValueError("No QR images")
-        # Auto-size the QR codes to fit the window
         spacing = 8
-        win_w = max(self.qr_window.winfo_width(), 200) - 30
-        win_h = max(self.qr_window.winfo_height(), 200) - 30
-        per_qr = max(
-            min(
-                (win_w - spacing * (grid_size - 1)) // grid_size,
-                (win_h - spacing * (grid_size - 1)) // grid_size,
-            ),
-            64,
-        )
+        win_w = max(self.qr_window.winfo_width(), 200) - 16
+        win_h = max(self.qr_window.winfo_height(), 200) - 16
+        per_w = max((win_w - spacing * (cols - 1)) // cols, 64)
+        per_h = max((win_h - spacing * (rows - 1)) // rows, 64)
+        per_qr = min(per_w, per_h)  # keep QRs square
 
         resized = [img.resize((per_qr, per_qr), Image.Resampling.NEAREST) for img in qr_images]
         # Pad with white if fewer QRs than grid cells
-        while len(resized) < grid_size * grid_size:
+        while len(resized) < cols * rows:
             resized.append(Image.new("RGB", (per_qr, per_qr), "white"))
 
-        total = per_qr * grid_size + spacing * (grid_size - 1)
-        canvas = Image.new("RGB", (total, total), "white")
-        for r in range(grid_size):
-            for c in range(grid_size):
-                idx = r * grid_size + c
+        total_w = per_qr * cols + spacing * (cols - 1)
+        total_h = per_qr * rows + spacing * (rows - 1)
+        canvas = Image.new("RGB", (total_w, total_h), "white")
+        for r in range(rows):
+            for c in range(cols):
+                idx = r * cols + c
                 canvas.paste(resized[idx], (c * (per_qr + spacing), r * (per_qr + spacing)))
         return canvas
 

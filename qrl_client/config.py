@@ -37,6 +37,10 @@ class ClientConfig:
     noise_reduction: bool = True
 
     # Output settings
+    # `output_dir` is where decoded files land. Filename is read from the
+    # stream manifest, so the user usually doesn't need to pick one upfront.
+    # Empty string means "auto" — resolved to ~/Downloads/qrl_received at runtime.
+    output_dir: str = ""
     output_buffer_size: int = 1024 * 1024  # 1MB
     temp_directory: Optional[str] = None
     cleanup_temp_files: bool = True
@@ -51,6 +55,12 @@ class ClientConfig:
     max_decode_attempts: int = 5
     frame_buffer_size: int = 50
     log_level: str = "INFO"
+
+    def resolve_output_dir(self) -> str:
+        """Returns the configured output_dir, or a sensible default."""
+        if self.output_dir:
+            return self.output_dir
+        return str(Path.home() / "Downloads" / "qrl_received")
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> 'ClientConfig':

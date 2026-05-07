@@ -79,6 +79,23 @@ def find_by_index(index: int) -> Optional[MonitorInfo]:
     return None
 
 
+def monitor_at_point(x: int, y: int) -> Optional[MonitorInfo]:
+    """Return the monitor whose bounds contain the given virtual-desktop point."""
+    for m in list_monitors():
+        if m.x <= x < m.x + m.width and m.y <= y < m.y + m.height:
+            return m
+    return None
+
+
+def primary_monitor() -> Optional[MonitorInfo]:
+    """Return the primary (origin 0,0) monitor."""
+    for m in list_monitors():
+        if m.is_primary:
+            return m
+    monitors = list_monitors()
+    return monitors[0] if monitors else None
+
+
 # --- internals ------------------------------------------------------------
 def _position_label(x: int, y: int, is_primary: bool) -> str:
     if is_primary:

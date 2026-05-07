@@ -6,14 +6,35 @@ Handles data chunking and metadata management.
 Wire format per chunk (shared with ParallelQREncoder so the client decoder
 only needs one parsing path):
     [stream_id : 1 byte][sequence : 4 bytes BE][total_chunks : 4 bytes BE][data : N bytes]
+
+Reserved stream_ids:
+    255 = manifest chunk. The data is a UTF-8 JSON document with file
+          metadata (filename, size, num_streams, total_chunks, etc.). The
+          server emits one of these at the start of every display cycle so
+          a late-joining client can still pick it up. Decoder reads this
+          to determine the output filename instead of needing the user to
+          pre-configure it.
 """
 
 import io
+import json
 import tarfile
 from pathlib import Path
 from typing import List
 
 HEADER_SIZE = 9
+MANIFEST_STREAM_ID = 255
+
+
+def build_manifest_chunk(manifest: dict) -> bytes:
+    """Build a manifest payload (with the 9-byte header on top)."""
+    body = json.dumps(manifest, separators=(",", ":")).encode("utf-8")
+    return pack_header(MANIFEST_STREAM_ID, 0, 1) + body
+
+
+def parse_manifest_payload(data: bytes) -> dict:
+    """Parse the JSON body of a manifest chunk. Raises on bad JSON."""
+    return json.loads(data.decode("utf-8"))
 
 
 def pack_header(stream_id: int, sequence: int, total_chunks: int) -> bytes:

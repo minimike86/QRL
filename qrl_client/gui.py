@@ -68,7 +68,9 @@ class QRLClientGUI:
         self.config = ClientConfig()
         self.decoder: Optional[QRLDecoder] = None
         self.capture_handler: Optional[CaptureHandler] = None
-        self.output_file: Optional[str] = None
+        # Output folder where decoded files land; filename comes from the
+        # stream manifest, so the user just needs to pick a folder once.
+        self.output_dir: str = self.config.resolve_output_dir()
         self.capture_thread: Optional[threading.Thread] = None
         self.is_capturing = False
         self._latest_preview: Optional[np.ndarray] = None
@@ -125,24 +127,33 @@ class QRLClientGUI:
         self._build_status_bar()
 
     def _build_workflow_panel(self, parent: ttk.Frame) -> None:
-        # === 1. Output file ===
+        # === 1. Output folder ===
         out_card = card(parent)
         out_card.pack(fill=tk.X, pady=(0, 12))
-        section_heading(out_card, "1. Output file", on_card=True).pack(anchor="w")
+        section_heading(out_card, "1. Output folder", on_card=True).pack(anchor="w")
         ttk.Label(
             out_card,
-            text="Where the decoded data will be written.",
+            text="Filename comes from the QR stream — pick where to save it.",
             style="CardMuted.TLabel",
         ).pack(anchor="w", pady=(2, 8))
 
         out_row = ttk.Frame(out_card, style="Card.TFrame")
         out_row.pack(fill=tk.X)
-        self.output_path_var = tk.StringVar()
+        self.output_path_var = tk.StringVar(value=self.output_dir)
         self.output_entry = ttk.Entry(out_row, textvariable=self.output_path_var)
         self.output_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
         ttk.Button(out_row, text="Browse…", command=self._browse_output_file).pack(
             side=tk.LEFT, padx=(8, 0)
         )
+
+        self.detected_filename_var = tk.StringVar(
+            value="Waiting for manifest…"
+        )
+        ttk.Label(
+            out_card,
+            textvariable=self.detected_filename_var,
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(8, 0))
 
         # === 2. Capture region ===
         region_card = card(parent)
@@ -403,17 +414,15 @@ class QRLClientGUI:
     # File / region pickers
     # ------------------------------------------------------------------
     def _browse_output_file(self) -> None:
-        filename = filedialog.asksaveasfilename(
-            title="Save decoded data to…",
-            filetypes=[
-                ("All files", "*.*"),
-                ("Binary files", "*.bin"),
-                ("Text files", "*.txt"),
-            ],
+        # Folder picker — filename comes from the manifest in the QR stream.
+        folder = filedialog.askdirectory(
+            title="Pick a folder for decoded files",
+            initialdir=self.output_dir or str(Path.home() / "Downloads"),
         )
-        if filename:
-            self.output_path_var.set(filename)
-            self.output_file = filename
+        if folder:
+            self.output_path_var.set(folder)
+            self.output_dir = folder
+            self.config.output_dir = folder
             self._update_button_states()
 
     def _select_region(self) -> None:
@@ -449,8 +458,12 @@ class QRLClientGUI:
     # Capture lifecycle
     # ------------------------------------------------------------------
     def _start_capture(self) -> None:
-        if not self.output_file:
-            messagebox.showerror("Missing output file", "Pick an output file first.")
+        # Resolve the output directory, creating it if needed.
+        self.output_dir = self.output_path_var.get() or self.config.resolve_output_dir()
+        try:
+            Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            messagebox.showerror("Output folder", f"Can't create folder: {e}")
             return
         if self.is_capturing:
             return
@@ -463,10 +476,11 @@ class QRLClientGUI:
 
         self.is_capturing = True
         self._capture_started_at = time.time()
+        self.detected_filename_var.set("Waiting for manifest…")
         self._update_button_states()
         set_status(self.status_label, "running", "Capturing")
         self._update_status("Capturing…")
-        self._log(f"Capture started → {self.output_file}")
+        self._log(f"Capture started → {self.output_dir}")
 
         self.capture_thread = threading.Thread(target=self._capture_worker, daemon=True)
         self.capture_thread.start()
@@ -478,7 +492,8 @@ class QRLClientGUI:
                 region=self.config.region,
                 interval=self.config.interval,
             )
-            self.decoder = QRLDecoder(self.output_file, timeout=self.config.timeout)
+            # Pass the directory; decoder resolves filename from manifest.
+            self.decoder = QRLDecoder(self.output_dir, timeout=self.config.timeout)
             self.capture_handler.start()
 
             start_time = time.time()
@@ -548,6 +563,14 @@ class QRLClientGUI:
         progress = self.decoder.get_progress()
         stats = self.decoder.get_statistics()
 
+        manifest = self.decoder.get_manifest()
+        if manifest is not None:
+            fname = manifest.get("filename", "?")
+            size = manifest.get("size", 0)
+            self.detected_filename_var.set(
+                f"📄  {fname}  ·  {size/1024:.1f} KB"
+            )
+
         pct = progress.get("percentage", 0)
         decoded = progress.get("decoded_chunks", 0)
         total = progress.get("total_chunks", 0)
@@ -575,10 +598,11 @@ class QRLClientGUI:
         self.progress_label_var.set("Complete — file decoded successfully.")
         set_status(self.status_label, "ok", "Complete")
         self._update_status("Decoding complete")
-        self._log(f"✓ Decoded → {self.output_file}")
+        out = self.decoder.resolve_output_path() if self.decoder else self.output_dir
+        self._log(f"✓ Decoded → {out}")
         self.is_capturing = False
         self._update_button_states()
-        messagebox.showinfo("Success", f"File decoded to:\n{self.output_file}")
+        messagebox.showinfo("Success", f"File decoded to:\n{out}")
 
     def _capture_finished_without_success(self) -> None:
         progress = self.decoder.get_progress() if self.decoder else {"percentage": 0}
@@ -606,7 +630,8 @@ class QRLClientGUI:
             self.start_btn.configure(state=tk.DISABLED)
             self.stop_btn.configure(state=tk.NORMAL)
         else:
-            self.start_btn.configure(state=tk.NORMAL if self.output_file else tk.DISABLED)
+            # We always have an output folder (defaults to ~/Downloads/qrl_received)
+            self.start_btn.configure(state=tk.NORMAL)
             self.stop_btn.configure(state=tk.DISABLED)
 
     def _update_status(self, text: str) -> None:
