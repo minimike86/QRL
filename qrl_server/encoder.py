@@ -192,14 +192,17 @@ class QRLEncoder:
     def prefetch_qr_images(
         self,
         max_workers: Optional[int] = None,
-        use_processes: Optional[bool] = None,
+        use_processes: bool = False,
     ) -> List[Image.Image]:
         """Generate every QR image upfront and cache them.
 
-        Uses a ProcessPool for batches > 50 chunks (true parallelism — qrcode
-        is pure-Python CPU-bound, so GIL severely limits ThreadPool speedup).
-        Falls back to ThreadPool for small batches where worker startup cost
-        would dominate."""
+        Uses ThreadPoolExecutor by default. ProcessPool is faster in theory
+        (true parallelism vs GIL-limited threads) but on Windows it deadlocks
+        when launched via console_scripts entry points that lack a
+        `if __name__ == '__main__': freeze_support()` guard — child processes
+        re-import the entry module and try to re-run main(). Set use_processes=
+        True only when you've ensured the entry point is multiprocessing-safe.
+        """
         if not self._chunks:
             raise ValueError("Chunks not prepared. Call prepare_chunks() first.")
 
@@ -211,8 +214,6 @@ class QRLEncoder:
         total = len(self._chunks)
         if max_workers is None:
             max_workers = max(2, (os.cpu_count() or 4))
-        if use_processes is None:
-            use_processes = total > 50
 
         args_iter = [
             (self._chunks[i], self.qr_version, self.error_correction)
@@ -224,8 +225,6 @@ class QRLEncoder:
             with Pool(max_workers=max_workers) as pool:
                 self._qr_images = list(pool.map(_pool_worker_generate, args_iter))
         except Exception:
-            # ProcessPool can fail in some environments (frozen apps, certain
-            # IDE runners). Fall back to threads.
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 self._qr_images = list(pool.map(_pool_worker_generate, args_iter))
         return self._qr_images

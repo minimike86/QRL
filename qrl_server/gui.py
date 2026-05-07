@@ -676,11 +676,20 @@ class QRLServerGUI:
         self.is_displaying = True
         set_status(self.status_label, "running", "Displaying")
         self._update_status("Displaying QR sequence…")
+        self._log("Opening QR display window…")
         self._update_button_states()
         self.current_qr_index = 0
         self.display_cycle = 0
         self._showed_manifest_this_cycle = False
-        self._create_qr_display_window()
+        try:
+            self._create_qr_display_window()
+        except Exception as e:
+            self._log(f"✗ Failed to open display window: {e}")
+            self.is_displaying = False
+            set_status(self.status_label, "error", "Display error")
+            self._update_button_states()
+            messagebox.showerror("Display window failed", str(e))
+            return
         # Schedule the first frame after the window is fully drawn
         self.root.after(150, self._show_next_qr)
 
@@ -709,20 +718,20 @@ class QRLServerGUI:
         target = monitor_at_point(cx, cy) or primary_monitor()
 
         if target is not None:
-            # Position the window on that monitor first; on Windows fullscreen
-            # follows whichever screen the window is currently on.
+            # Two-step approach: position WITHOUT fullscreen first so Tk
+            # actually moves the window to the target monitor, then turn on
+            # fullscreen. Doing both in one go can leave fullscreen on the
+            # original monitor because the geometry move is async.
             self.qr_window.geometry(
                 f"{target.width}x{target.height}{target.x:+d}{target.y:+d}"
             )
-            self._log(f"QR display targeting {target.name}")
+            self._log(f"QR display targeting {target.name} ({target.width}x{target.height} at {target.x:+d},{target.y:+d})")
         else:
             self.qr_window.geometry("800x600")
 
-        # Always open fullscreen — that's the whole point of this mode
-        self.qr_window.attributes("-fullscreen", True)
-
-        self.qr_display_label = tk.Label(self.qr_window, bg="white", text="…",
-                                          font=self.fonts["body"])
+        self.qr_display_label = tk.Label(
+            self.qr_window, bg="white", text="Loading…", font=self.fonts["body"]
+        )
         self.qr_display_label.pack(expand=True, fill=tk.BOTH)
 
         def _close():
@@ -741,8 +750,23 @@ class QRLServerGUI:
         self.qr_window.bind("<F11>", lambda _e: self.qr_window.attributes(
             "-fullscreen", not self.qr_window.attributes("-fullscreen")
         ))
+
+        # Force the window to materialize on the target monitor BEFORE going
+        # fullscreen. Without this, -fullscreen captures whichever monitor the
+        # window happened to be created on (usually the primary).
+        self.qr_window.deiconify()
         self.qr_window.lift()
         self.qr_window.focus_force()
+        self.qr_window.update_idletasks()
+        self.qr_window.update()
+
+        # Now go fullscreen on the (now-correctly-positioned) monitor.
+        self.qr_window.attributes("-topmost", True)
+        self.qr_window.attributes("-fullscreen", True)
+        self.qr_window.update_idletasks()
+        # Drop topmost after a moment so it doesn't stay above everything forever
+        self.qr_window.after(500, lambda: self.qr_window.attributes("-topmost", False)
+                             if self.qr_window else None)
 
     def _show_next_qr(self) -> None:
         if not self.is_displaying or not self.qr_window:
