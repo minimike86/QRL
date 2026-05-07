@@ -4,9 +4,15 @@ QRL Client Decoder
 Reconstructs files from streamed QR captures. Handles single-stream and
 parallel-stream encodings uniformly via the shared 9-byte wire header
 defined in qrl_server.chunk.
+
+If the stream's manifest declares is_directory=True, the decoded payload
+(a tar archive built by ChunkManager.read_directory) is automatically
+extracted into output_dir/<filename>/.
 """
 
+import io
 import json
+import tarfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -211,6 +217,31 @@ class QRLDecoder:
             declared_size = self._manifest.get("size")
             if isinstance(declared_size, int) and 0 < declared_size <= len(data):
                 data = data[:declared_size]
+
+        # If the manifest declared this was a directory, the data is a tar
+        # archive — extract it into the output folder instead of writing the
+        # raw bytes (which would just be a confusing untyped blob).
+        if (
+            self._manifest is not None
+            and self._manifest.get("is_directory")
+            and Path(self.output_path).is_dir()
+        ):
+            target_dir = Path(self.output_path)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
+                    # Python 3.12+ requires an explicit `filter` for safety
+                    try:
+                        tar.extractall(target_dir, filter="data")
+                    except TypeError:
+                        tar.extractall(target_dir)
+                # Resolved output path becomes the extracted folder for clarity
+                folder_name = self._manifest.get("filename", "decoded")
+                self._resolved_output_path = str(target_dir / Path(folder_name).name)
+                return
+            except (tarfile.TarError, OSError) as e:
+                # Fall through and just write the raw tar bytes if extraction fails
+                self._extract_error = str(e)
 
         out = Path(self.resolve_output_path())
         out.parent.mkdir(parents=True, exist_ok=True)

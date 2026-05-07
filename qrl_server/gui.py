@@ -174,13 +174,13 @@ class QRLServerGUI:
         self._build_status_bar()
 
     def _build_workflow_panel(self, parent: ttk.Frame) -> None:
-        # === 1. File ===
+        # === 1. File or folder ===
         file_card = card(parent)
         file_card.pack(fill=tk.X, pady=(0, 12))
-        section_heading(file_card, "1. File to send", on_card=True).pack(anchor="w")
+        section_heading(file_card, "1. File or folder to send", on_card=True).pack(anchor="w")
         ttk.Label(
             file_card,
-            text="Pick any binary or text file.",
+            text="A folder is sent as a tar archive and auto-extracted on the client.",
             style="CardMuted.TLabel",
         ).pack(anchor="w", pady=(2, 8))
 
@@ -189,12 +189,15 @@ class QRLServerGUI:
         self.file_path_var = tk.StringVar()
         self.file_entry = ttk.Entry(file_row, textvariable=self.file_path_var)
         self.file_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
-        ttk.Button(file_row, text="Browse…", command=self._browse_file).pack(
+        ttk.Button(file_row, text="File…", command=self._browse_file).pack(
             side=tk.LEFT, padx=(8, 0)
+        )
+        ttk.Button(file_row, text="Folder…", command=self._browse_folder).pack(
+            side=tk.LEFT, padx=(4, 0)
         )
 
         # Drag-and-drop hint + wire up DND on the file entry if available
-        hint = "Drag a file here or use Browse." if self._dnd_available else ""
+        hint = "Drag a file or folder here, or use the buttons." if self._dnd_available else ""
         self.file_info_var = tk.StringVar(value=hint)
         ttk.Label(file_card, textvariable=self.file_info_var, style="CardMuted.TLabel").pack(
             anchor="w", pady=(8, 0)
@@ -302,13 +305,21 @@ class QRLServerGUI:
         )
         self.stop_btn.pack(side=tk.LEFT, padx=(8, 0))
 
-        self.save_qr_btn = ttk.Button(
+        # Right side: export menu (PDF / video for offline replay)
+        self.export_video_btn = ttk.Button(
             actions,
-            text="Save QR images…",
-            command=self._save_qr_images,
+            text="Export video…",
+            command=self._export_video,
             state=tk.DISABLED,
         )
-        self.save_qr_btn.pack(side=tk.RIGHT)
+        self.export_video_btn.pack(side=tk.RIGHT)
+        self.export_pdf_btn = ttk.Button(
+            actions,
+            text="Export PDF…",
+            command=self._export_pdf,
+            state=tk.DISABLED,
+        )
+        self.export_pdf_btn.pack(side=tk.RIGHT, padx=(0, 6))
 
     def _build_status_panel(self, parent: ttk.Frame) -> None:
         # Summary card
@@ -429,6 +440,15 @@ class QRLServerGUI:
             btn.configure(style=style)
         self._refresh_summary()
 
+    # Target per-QR pixel size for the Auto-fit-screen mode. Independent of
+    # config.qr_physical_size (which is the MAX size for non-auto modes).
+    # 400 px is a good practical default — small enough that a 1080p screen
+    # still fits a 5x2 grid (10 streams = ~10× single-stream throughput) but
+    # large enough that mss/pyzbar reliably reads each code from the client
+    # capture. Going much smaller (e.g. 200) packs more QRs but they become
+    # too small to scan, especially after capture downsampling.
+    AUTO_QR_TARGET_PX = 400
+
     def _set_mode_preset(self, mode_value, refresh_only: bool = False) -> None:
         """mode_value is either an int (explicit num_streams) or "auto"."""
         if not refresh_only:
@@ -440,6 +460,10 @@ class QRLServerGUI:
                 self._grid_cols, self._grid_rows = cols, rows
                 self.use_parallel_encoding = (cols * rows) > 1
                 self._mode_streams = cols * rows
+                self._log(
+                    f"Auto-fit: {cols}×{rows} = {cols*rows} streams "
+                    f"(monitor {self._last_auto_monitor_label})"
+                )
             else:
                 num = int(mode_value)
                 self.use_parallel_encoding = num > 1
@@ -460,25 +484,31 @@ class QRLServerGUI:
         self._refresh_summary()
 
     def _auto_grid_for_current_monitor(self) -> tuple:
-        """Find the monitor under the server window and compute (cols, rows)."""
+        """Find the monitor under the server window and compute (cols, rows).
+        Always uses AUTO_QR_TARGET_PX, NOT config.qr_physical_size."""
         try:
             self.root.update_idletasks()
             cx = self.root.winfo_x() + self.root.winfo_width() // 2
             cy = self.root.winfo_y() + self.root.winfo_height() // 2
             mon = monitor_at_point(cx, cy) or primary_monitor()
             if mon is None:
+                self._last_auto_monitor_label = "unknown"
                 return 1, 1
-            return auto_grid_for_screen(
-                mon.width, mon.height, qr_target_px=self.config.qr_physical_size
+            self._last_auto_monitor_label = (
+                f"{mon.name.split('  ·  ')[0]} {mon.width}×{mon.height}"
             )
-        except Exception:
+            return auto_grid_for_screen(
+                mon.width, mon.height, qr_target_px=self.AUTO_QR_TARGET_PX
+            )
+        except Exception as e:
+            self._last_auto_monitor_label = f"error ({e})"
             return 1, 1
 
     def _refresh_summary(self) -> None:
         if not self.current_file:
-            self.summary_var.set("Pick a file to begin.")
+            self.summary_var.set("Pick a file or folder to begin.")
             return
-        size = Path(self.current_file).stat().st_size if Path(self.current_file).exists() else 0
+        size = getattr(self, "_current_size_bytes", 0)
         size_mb = size / (1024 * 1024)
         streams = getattr(self, "_mode_streams", 1)
         bytes_per_sec = (self.config.chunk_size * streams) / max(self.config.duration, 1e-6)
@@ -521,17 +551,46 @@ class QRLServerGUI:
         widget.dnd_bind("<<Drop>>", _on_drop)
 
     def _set_current_file(self, path: str) -> None:
-        """Common handler for file selection from any source (browse or DND)."""
+        """Common handler for file/folder selection from any source (browse or DND)."""
         p = Path(path)
         if not p.exists():
-            messagebox.showerror("File not found", path)
+            messagebox.showerror("Not found", path)
             return
         self.file_path_var.set(str(p))
         self.current_file = str(p)
-        size = p.stat().st_size
-        self.file_info_var.set(f"{size:,} bytes  ·  {size/1024/1024:.2f} MB")
+        if p.is_dir():
+            file_count, total_size = self._summarize_directory(p)
+            self._current_size_bytes = total_size
+            self.file_info_var.set(
+                f"📁 folder  ·  {file_count:,} files  ·  "
+                f"{total_size:,} bytes  ·  {total_size/1024/1024:.2f} MB "
+                f"(packed as tar archive)"
+            )
+        else:
+            size = p.stat().st_size
+            self._current_size_bytes = size
+            self.file_info_var.set(
+                f"📄 file  ·  {size:,} bytes  ·  {size/1024/1024:.2f} MB"
+            )
         self._refresh_summary()
         self._update_button_states()
+
+    @staticmethod
+    def _summarize_directory(root: Path) -> tuple:
+        """Walk a directory and return (file_count, total_bytes)."""
+        count = 0
+        total = 0
+        try:
+            for sub in root.rglob("*"):
+                if sub.is_file():
+                    count += 1
+                    try:
+                        total += sub.stat().st_size
+                    except OSError:
+                        pass
+        except (PermissionError, OSError):
+            pass
+        return count, total
 
     def _browse_file(self) -> None:
         filename = filedialog.askopenfilename(
@@ -545,6 +604,11 @@ class QRLServerGUI:
         )
         if filename:
             self._set_current_file(filename)
+
+    def _browse_folder(self) -> None:
+        folder = filedialog.askdirectory(title="Select folder to encode (sent as tar)")
+        if folder:
+            self._set_current_file(folder)
 
     # ------------------------------------------------------------------
     # Encode workflow
@@ -569,30 +633,45 @@ class QRLServerGUI:
         self.encoding_thread.start()
 
     def _encode_worker(self) -> None:
+        """Encoding pipeline. QR images are NOT pre-generated — they're
+        rendered on-the-fly during display (with a lazy cache so repeat
+        cycles are fast). This makes "Prepare" finish in milliseconds instead
+        of waiting for thousands of QRs to be encoded upfront."""
         try:
-            self._log(f"Encoding {self.current_file}")
-            file_size = Path(self.current_file).stat().st_size
+            src_path = Path(self.current_file)
+            is_dir = src_path.is_dir()
+            file_size = getattr(self, "_current_size_bytes", 0) or src_path.stat().st_size
+            kind = "folder" if is_dir else "file"
+            self._log_main(
+                f"▸ Encoding {kind}: {src_path.name}  ({file_size:,} bytes / {file_size/1024/1024:.2f} MB)"
+            )
             if file_size == 0:
-                raise ValueError("File is empty")
+                raise ValueError(f"{kind.title()} is empty")
             if file_size > self.config.max_file_size:
                 raise ValueError(
-                    f"File ({file_size/1024/1024:.1f} MB) exceeds max ({self.config.max_file_size/1024/1024:.1f} MB)"
+                    f"{kind.title()} ({file_size/1024/1024:.1f} MB) exceeds max ({self.config.max_file_size/1024/1024:.1f} MB)"
                 )
+            if is_dir:
+                self._log_main("  ↳ Packing as tar archive (auto-extracted on the client)")
 
-            # If "auto" mode, recompute grid in case the user moved the window
-            # since they picked the preset.
             if self._mode_value == "auto":
                 cols, rows = self._auto_grid_for_current_monitor()
                 self._grid_cols, self._grid_rows = cols, rows
                 self._mode_streams = cols * rows
                 self.use_parallel_encoding = self._mode_streams > 1
-                self._log(f"Auto grid for current monitor: {cols}×{rows} = {cols*rows} streams")
+                self._log_main(f"▸ Auto-grid: {cols}×{rows} = {cols*rows} parallel streams")
 
-            self._cached_qr_sets = None
+            # Reset caches — they're rebuilt lazily during display
+            self._qr_cache: dict = {}
+            self._qr_set_cache: dict = {}
             self._manifest_qr_image = None
 
             if self.use_parallel_encoding:
                 streams = self._mode_streams
+                self._log_main(
+                    f"▸ Splitting across {streams} parallel streams "
+                    f"(chunk size {self.config.chunk_size} B)…"
+                )
                 self.parallel_encoder = ParallelQREncoder(
                     self.current_file,
                     num_streams=streams,
@@ -601,51 +680,132 @@ class QRLServerGUI:
                 )
                 self.parallel_encoder.prepare_parallel_streams()
                 self.total_chunks = self.parallel_encoder.get_total_chunks()
-                stats = self.parallel_encoder.calculate_theoretical_throughput(self.config.duration)
-                self._log(
-                    f"Parallel: {streams} streams × {self.total_chunks} sets  "
-                    f"→ {stats.get('kilobytes_per_second', 0):.1f} KB/s theoretical"
+                stats = self.parallel_encoder.calculate_theoretical_throughput(
+                    self.config.duration
                 )
-                # Pre-generate every set once, in parallel
-                self.root.after(0, lambda: self.progress_label_var.set(
-                    f"Pre-generating {self.total_chunks * streams} QRs across CPU cores…"
-                ))
-                t0 = time.time()
-                self._cached_qr_sets = self.parallel_encoder.prefetch_all_qr_sets()
-                self._manifest_qr_image = self.parallel_encoder.generate_manifest_qr()
-                elapsed = time.time() - t0
-                self._log(
-                    f"Pre-generated {self.total_chunks * streams} QRs in {elapsed:.2f}s "
-                    f"({(self.total_chunks * streams)/max(elapsed, 1e-3):.0f} QR/s)"
+                total_qrs = self.total_chunks * streams
+                self._log_main(
+                    f"  {self.total_chunks:,} chunks/stream  ·  "
+                    f"{total_qrs:,} QR images total  ·  "
+                    f"~{stats.get('kilobytes_per_second', 0):.1f} KB/s theoretical"
                 )
             else:
+                self._log_main(f"▸ Splitting file (chunk size {self.config.chunk_size} B)…")
                 self.encoder = QRLEncoder(
                     self.current_file,
                     chunk_size=self.config.chunk_size,
                     error_correction=self.config.error_correction,
                 )
                 self.total_chunks = self.encoder.prepare_chunks()
-                if (
-                    getattr(self.config, "prefetch_qr_images", True)
-                    and file_size <= getattr(self.config, "prefetch_max_bytes", 5 * 1024 * 1024)
-                ):
-                    self.root.after(0, lambda: self.progress_label_var.set(
-                        f"Pre-generating {self.total_chunks} QRs across CPU cores…"
-                    ))
-                    t0 = time.time()
-                    self.encoder.prefetch_qr_images()
-                    self._manifest_qr_image = self.encoder.generate_manifest_qr(num_streams=1)
-                    elapsed = time.time() - t0
-                    self._log(
-                        f"Pre-generated {self.total_chunks} QRs in {elapsed:.2f}s "
-                        f"({self.total_chunks/max(elapsed, 1e-3):.0f} QR/s)"
-                    )
+                self._log_main(f"  {self.total_chunks:,} chunks ready")
+
+            self._log_main("▸ Ready to display — QRs generate in background while you watch")
+            # Kick off non-blocking background prefetch so the display loop
+            # can read pre-rendered frames from the cache instead of generating
+            # them inline (which would stall display when grids are large).
+            self._start_background_prefetch()
             self.root.after(0, self._encoding_complete)
         except Exception as e:
             self.root.after(0, lambda err=str(e): self._encoding_error(err))
         finally:
             self.is_encoding = False
             self.root.after(0, self._update_button_states)
+
+    def _start_background_prefetch(self) -> None:
+        """Populate the QR cache in a background thread without blocking the
+        display loop. Display reads from the cache when available, falls back
+        to inline generation if the prefetch hasn't reached that index yet."""
+        # Cancel any prior prefetch by bumping a generation token
+        self._prefetch_gen = getattr(self, "_prefetch_gen", 0) + 1
+        gen = self._prefetch_gen
+
+        def _root_alive() -> bool:
+            try:
+                return bool(self.root.winfo_exists())
+            except (tk.TclError, RuntimeError, AttributeError):
+                return False
+
+        def worker():
+            try:
+                t0 = time.time()
+                if self.use_parallel_encoding and self.parallel_encoder is not None:
+                    total = self.total_chunks
+                    streams = self._mode_streams
+                    last_decile = -1
+                    for i in range(total):
+                        if gen != self._prefetch_gen or not _root_alive():
+                            return  # superseded or GUI gone
+                        if i not in self._qr_set_cache:
+                            self._qr_set_cache[i] = self.parallel_encoder.generate_qr_set(i)
+                        decile = (i + 1) * 10 // max(total, 1)
+                        if decile > last_decile and decile < 10:
+                            last_decile = decile
+                            self._log_main(f"  …prefetched {decile*10}% ({i+1}/{total} sets, {streams * (i+1):,} QRs)")
+                    elapsed = time.time() - t0
+                    self._log_main(
+                        f"  ✓ Cache full: {total * streams:,} QRs ready ({elapsed:.1f}s)"
+                    )
+                elif self.encoder is not None:
+                    total = self.total_chunks
+                    last_decile = -1
+                    for i in range(total):
+                        if gen != self._prefetch_gen or not _root_alive():
+                            return
+                        if i not in self._qr_cache:
+                            self._qr_cache[i] = self.encoder.generate_qr_for_chunk(i)
+                        decile = (i + 1) * 10 // max(total, 1)
+                        if decile > last_decile and decile < 10:
+                            last_decile = decile
+                            self._log_main(f"  …prefetched {decile*10}% ({i+1}/{total} QRs)")
+                    elapsed = time.time() - t0
+                    self._log_main(f"  ✓ Cache full: {total:,} QRs ready ({elapsed:.1f}s)")
+            except Exception as e:
+                self._log_main(f"  ✗ Background prefetch error: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _cpu_count() -> int:
+        import os
+        return os.cpu_count() or 4
+
+    def _log_main(self, msg: str) -> None:
+        """Log to the activity panel from any thread (marshals to main thread).
+
+        Silently no-ops if the root has been destroyed — important for
+        background threads that may outlive the GUI (e.g. prefetch workers
+        that finish after the user closes the window or a test tears down)."""
+        try:
+            self.root.after(0, lambda: self._log(msg))
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _set_progress_label(self, text: str) -> None:
+        try:
+            self.root.after(0, lambda: self.progress_label_var.set(text))
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def _on_prefetch_progress(self, done: int, total: int, start_time: float) -> None:
+        """Called from worker thread as QRs finish. Throttled to avoid log spam."""
+        now = time.time()
+        # Update progress label every ~0.25s
+        last = getattr(self, "_last_progress_at", 0)
+        if now - last > 0.25 or done == total:
+            self._last_progress_at = now
+            elapsed = now - start_time
+            rate = done / max(elapsed, 1e-3)
+            self._set_progress_label(
+                f"Generating QR images: {done:,} / {total:,}  ·  {rate:.0f} QR/s"
+            )
+        # Log only at decile boundaries to avoid spamming the activity log
+        last_decile = getattr(self, "_last_logged_decile", -1)
+        decile = (done * 10) // max(total, 1)
+        if decile > last_decile and decile < 10:
+            self._last_logged_decile = decile
+            self._log_main(f"  …{decile*10}%  ({done:,} / {total:,} QRs)")
+        if done == total:
+            self._last_logged_decile = -1  # reset for next encode
 
     def _encoding_complete(self) -> None:
         self.progress_var.set(100)
@@ -773,37 +933,31 @@ class QRLServerGUI:
             return
         try:
             # At the start of each cycle, show the manifest QR once so a
-            # late-joining client can pick up the filename.
-            if (
-                not self._showed_manifest_this_cycle
-                and self._manifest_qr_image is not None
-            ):
+            # late-joining client can pick up the filename. Generated lazily.
+            if not self._showed_manifest_this_cycle:
                 self._showed_manifest_this_cycle = True
-                self._render_single(self._manifest_qr_image)
-                self.qr_window.title("QRL Display  ·  manifest")
-                if self.is_displaying:
-                    self.root.after(
-                        max(int(self.config.duration * 1000), 1), self._show_next_qr
-                    )
-                return
+                if self._manifest_qr_image is None:
+                    self._manifest_qr_image = self._lazy_manifest()
+                if self._manifest_qr_image is not None:
+                    self._render_single(self._manifest_qr_image)
+                    self.qr_window.title("QRL Display  ·  manifest")
+                    if self.is_displaying:
+                        self.root.after(
+                            max(int(self.config.duration * 1000), 1), self._show_next_qr
+                        )
+                    return
 
             if self.use_parallel_encoding and self.parallel_encoder:
-                if self._cached_qr_sets is not None:
-                    qr_images = self._cached_qr_sets[self.current_qr_index]
-                else:
-                    qr_images = self.parallel_encoder.generate_qr_set(self.current_qr_index)
+                qr_images = self._lazy_qr_set(self.current_qr_index)
                 cols, rows = self._grid_cols, self._grid_rows
                 self.current_qr_index += 1
             else:
                 cols, rows = self._grid_cols, self._grid_rows
                 cells = cols * rows
                 qr_images = []
-                cached = self.encoder.get_qr_images() if self.encoder else None
                 for i in range(cells):
                     chunk_idx = (self.current_qr_index + i) % self.total_chunks
-                    qr_images.append(
-                        cached[chunk_idx] if cached else self.encoder.generate_qr_for_chunk(chunk_idx)
-                    )
+                    qr_images.append(self._lazy_qr_image(chunk_idx))
                 self.current_qr_index += cells
 
             combined = self._compose_grid(qr_images, cols, rows)
@@ -843,6 +997,32 @@ class QRLServerGUI:
             self._update_button_states()
             set_status(self.status_label, "error", "Display error")
 
+    # ------------------------------------------------------------------
+    # Lazy QR generation — generate on first access, cache forever after
+    # ------------------------------------------------------------------
+    def _lazy_qr_image(self, chunk_idx: int) -> Image.Image:
+        cache = getattr(self, "_qr_cache", None)
+        if cache is None:
+            self._qr_cache = cache = {}
+        if chunk_idx not in cache:
+            cache[chunk_idx] = self.encoder.generate_qr_for_chunk(chunk_idx)
+        return cache[chunk_idx]
+
+    def _lazy_qr_set(self, set_idx: int) -> List[Image.Image]:
+        cache = getattr(self, "_qr_set_cache", None)
+        if cache is None:
+            self._qr_set_cache = cache = {}
+        if set_idx not in cache:
+            cache[set_idx] = self.parallel_encoder.generate_qr_set(set_idx)
+        return cache[set_idx]
+
+    def _lazy_manifest(self) -> Optional[Image.Image]:
+        if self.use_parallel_encoding and self.parallel_encoder is not None:
+            return self.parallel_encoder.generate_manifest_qr()
+        if self.encoder is not None:
+            return self.encoder.generate_manifest_qr(num_streams=1)
+        return None
+
     def _render_single(self, image: Image.Image) -> None:
         """Render a single PIL image, fit to the display window."""
         win_w = max(self.qr_window.winfo_width(), 200)
@@ -856,19 +1036,40 @@ class QRLServerGUI:
         self.qr_display_label.configure(image=self.qr_photo, text="")
         self.qr_display_label.image = self.qr_photo
 
-    def _compose_grid(self, qr_images: List[Image.Image], cols: int, rows: int) -> Image.Image:
-        """Compose `qr_images` into a `cols × rows` grid sized to the display window."""
+    def _compose_grid(
+        self,
+        qr_images: List[Image.Image],
+        cols: int,
+        rows: int,
+        target_w: Optional[int] = None,
+        target_h: Optional[int] = None,
+    ) -> Image.Image:
+        """Compose `qr_images` into a `cols × rows` grid.
+
+        Uses the display window dimensions when available (live display); when
+        called from an offscreen context (export), pass target_w/target_h —
+        defaults sized for a comfortable export."""
         if not qr_images:
             raise ValueError("No QR images")
         spacing = 8
-        win_w = max(self.qr_window.winfo_width(), 200) - 16
-        win_h = max(self.qr_window.winfo_height(), 200) - 16
-        per_w = max((win_w - spacing * (cols - 1)) // cols, 64)
-        per_h = max((win_h - spacing * (rows - 1)) // rows, 64)
-        per_qr = min(per_w, per_h)  # keep QRs square
+        if target_w is None or target_h is None:
+            if self.qr_window is not None:
+                target_w = max(self.qr_window.winfo_width(), 200) - 16
+                target_h = max(self.qr_window.winfo_height(), 200) - 16
+            else:
+                # Offscreen / export default: 1920×1080 canvas
+                target_w = 1920
+                target_h = 1080
+        per_w = max((target_w - spacing * (cols - 1)) // cols, 64)
+        per_h = max((target_h - spacing * (rows - 1)) // rows, 64)
+        per_qr = min(per_w, per_h)  # square cells
 
-        resized = [img.resize((per_qr, per_qr), Image.Resampling.NEAREST) for img in qr_images]
-        # Pad with white if fewer QRs than grid cells
+        # Resize at INTEGER multiples of native QR size: a naïve NEAREST resize
+        # from e.g. 370 → 400 makes some modules 11px wide and others 10px,
+        # which confuses pyzbar. Snapping to a clean multiple keeps every
+        # module identical. Some pixel area may go unused (white margin) but
+        # that strictly helps scanning reliability.
+        resized = [self._resize_to_clean_multiple(img, per_qr) for img in qr_images]
         while len(resized) < cols * rows:
             resized.append(Image.new("RGB", (per_qr, per_qr), "white"))
 
@@ -878,33 +1079,161 @@ class QRLServerGUI:
         for r in range(rows):
             for c in range(cols):
                 idx = r * cols + c
-                canvas.paste(resized[idx], (c * (per_qr + spacing), r * (per_qr + spacing)))
+                qr = resized[idx]
+                cell_x = c * (per_qr + spacing)
+                cell_y = r * (per_qr + spacing)
+                # Centre the QR in its cell so any leftover slack becomes
+                # extra white margin (more quiet zone is good).
+                ox = cell_x + (per_qr - qr.size[0]) // 2
+                oy = cell_y + (per_qr - qr.size[1]) // 2
+                canvas.paste(qr, (ox, oy))
         return canvas
 
+    @staticmethod
+    def _resize_to_clean_multiple(qr_img: Image.Image, target_px: int) -> Image.Image:
+        """Resize a QR image to the largest integer multiple of its native
+        size that fits target_px (or the largest integer divisor if shrinking).
+        Guarantees uniform module sizes."""
+        native = qr_img.size[0]  # QR images are square
+        if native == 0:
+            return qr_img
+        if target_px >= native:
+            multiplier = target_px // native
+            new_size = multiplier * native
+            if new_size == native:
+                return qr_img
+            return qr_img.resize((new_size, new_size), Image.Resampling.NEAREST)
+        # Slot smaller than native — shrink to the largest 1/N of native that fits
+        divisor = max(1, -(-native // target_px))  # ceil(native / target_px)
+        new_size = native // divisor
+        return qr_img.resize((new_size, new_size), Image.Resampling.NEAREST)
+
     # ------------------------------------------------------------------
-    # Save QR images
+    # Exports — PDF (paginated) and MP4 video
     # ------------------------------------------------------------------
-    def _save_qr_images(self) -> None:
+    def _frames_for_export(self):
+        """Yield the sequence of composed display frames as PIL Images.
+        Includes the manifest as the first frame, then one frame per chunk
+        index with the same grid layout the live display would use."""
+        # Manifest first
+        manifest = self._lazy_manifest()
+        if manifest is not None:
+            yield manifest
+
+        cols, rows = self._grid_cols, self._grid_rows
+        if self.use_parallel_encoding and self.parallel_encoder:
+            for set_idx in range(self.total_chunks):
+                imgs = self.parallel_encoder.generate_qr_set(set_idx)
+                yield self._compose_grid(imgs, cols, rows)
+        else:
+            cells = cols * rows
+            i = 0
+            while i < self.total_chunks:
+                batch = []
+                for j in range(cells):
+                    idx = (i + j) % self.total_chunks
+                    batch.append(self.encoder.generate_qr_for_chunk(idx))
+                yield self._compose_grid(batch, cols, rows)
+                i += cells
+
+    def _export_pdf(self) -> None:
         if self.total_chunks == 0:
-            messagebox.showerror("Nothing to save", "Prepare a file first.")
+            messagebox.showerror("Nothing to export", "Prepare a file first.")
             return
-        directory = filedialog.askdirectory(title="Pick a directory to save QR images")
-        if not directory:
+        out = filedialog.asksaveasfilename(
+            title="Export QR sequence as PDF",
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            initialfile=f"{Path(self.current_file).stem}_qr.pdf" if self.current_file else "qr.pdf",
+        )
+        if not out:
             return
+        threading.Thread(target=self._export_pdf_worker, args=(out,), daemon=True).start()
+
+    def _export_pdf_worker(self, out_path: str) -> None:
         try:
-            output = Path(directory)
-            output.mkdir(parents=True, exist_ok=True)
-            cached = self.encoder.get_qr_images() if self.encoder else None
-            count = 0
-            for i in range(self.total_chunks):
-                img = cached[i] if cached else self.encoder.generate_qr_for_chunk(i)
-                img.save(output / f"qr_{i:04d}.png")
-                count += 1
-            self._log(f"Saved {count} QR images to {directory}")
-            messagebox.showinfo("Saved", f"Saved {count} QR images to {directory}")
+            self._log_main(f"▸ Exporting PDF → {out_path}")
+            t0 = time.time()
+            frames = list(self._frames_for_export())
+            if not frames:
+                raise ValueError("No frames to export")
+            # PIL writes multipage PDFs natively. Convert to RGB to be safe.
+            rgb_frames = [f.convert("RGB") for f in frames]
+            rgb_frames[0].save(
+                out_path,
+                save_all=True,
+                append_images=rgb_frames[1:],
+                resolution=150.0,
+            )
+            elapsed = time.time() - t0
+            self._log_main(f"  ✓ Wrote {len(frames)} pages in {elapsed:.2f}s")
+            self.root.after(
+                0, lambda: messagebox.showinfo("PDF saved", f"{len(frames)} pages → {out_path}")
+            )
         except Exception as e:
-            self._log(f"Save failed: {e}")
-            messagebox.showerror("Save failed", str(e))
+            self._log_main(f"  ✗ PDF export failed: {e}")
+            self.root.after(0, lambda err=str(e): messagebox.showerror("PDF export failed", err))
+
+    def _export_video(self) -> None:
+        if self.total_chunks == 0:
+            messagebox.showerror("Nothing to export", "Prepare a file first.")
+            return
+        out = filedialog.asksaveasfilename(
+            title="Export QR sequence as video",
+            defaultextension=".mp4",
+            filetypes=[("MP4 video", "*.mp4")],
+            initialfile=f"{Path(self.current_file).stem}_qr.mp4" if self.current_file else "qr.mp4",
+        )
+        if not out:
+            return
+        threading.Thread(target=self._export_video_worker, args=(out,), daemon=True).start()
+
+    def _export_video_worker(self, out_path: str) -> None:
+        try:
+            import cv2
+            import numpy as np
+
+            fps = max(round(1.0 / max(self.config.duration, 1e-3)), 1)
+            self._log_main(f"▸ Exporting video at {fps} FPS → {out_path}")
+            t0 = time.time()
+
+            frames = list(self._frames_for_export())
+            if not frames:
+                raise ValueError("No frames to export")
+
+            # Pad all frames to the size of the largest one (manifest may be
+            # smaller than a parallel-grid composed frame).
+            max_w = max(f.width for f in frames)
+            max_h = max(f.height for f in frames)
+
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(out_path, fourcc, fps, (max_w, max_h))
+            if not writer.isOpened():
+                raise RuntimeError("OpenCV could not open video writer (codec missing?)")
+
+            for i, frame in enumerate(frames):
+                rgb = frame.convert("RGB")
+                if rgb.size != (max_w, max_h):
+                    canvas = Image.new("RGB", (max_w, max_h), "white")
+                    canvas.paste(rgb, ((max_w - rgb.width) // 2, (max_h - rgb.height) // 2))
+                    rgb = canvas
+                bgr = cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2BGR)
+                writer.write(bgr)
+                if (i + 1) % max(1, len(frames) // 10) == 0:
+                    self._log_main(f"  …{(i+1)*100//len(frames)}% ({i+1}/{len(frames)})")
+
+            writer.release()
+            elapsed = time.time() - t0
+            self._log_main(f"  ✓ {len(frames)} frames @ {fps} FPS in {elapsed:.2f}s")
+            self.root.after(
+                0,
+                lambda: messagebox.showinfo(
+                    "Video saved", f"{len(frames)} frames @ {fps} FPS → {out_path}"
+                ),
+            )
+        except Exception as e:
+            self._log_main(f"  ✗ Video export failed: {e}")
+            self.root.after(0, lambda err=str(e): messagebox.showerror("Video export failed", err))
 
     # ------------------------------------------------------------------
     # Misc helpers
@@ -913,7 +1242,8 @@ class QRLServerGUI:
         if self.is_encoding:
             self.encode_btn.configure(state=tk.DISABLED)
             self.display_btn.configure(state=tk.DISABLED)
-            self.save_qr_btn.configure(state=tk.DISABLED)
+            self.export_pdf_btn.configure(state=tk.DISABLED)
+            self.export_video_btn.configure(state=tk.DISABLED)
             self.stop_btn.configure(state=tk.DISABLED)
             return
         has_file = bool(self.current_file)
@@ -922,7 +1252,8 @@ class QRLServerGUI:
         self.display_btn.configure(
             state=tk.NORMAL if has_chunks and not self.is_displaying else tk.DISABLED
         )
-        self.save_qr_btn.configure(state=tk.NORMAL if has_chunks else tk.DISABLED)
+        self.export_pdf_btn.configure(state=tk.NORMAL if has_chunks else tk.DISABLED)
+        self.export_video_btn.configure(state=tk.NORMAL if has_chunks else tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL if self.is_displaying else tk.DISABLED)
 
     def _update_status(self, text: str) -> None:

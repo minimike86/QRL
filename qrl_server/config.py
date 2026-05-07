@@ -16,9 +16,13 @@ class ServerConfig:
     """Server configuration settings."""
 
     # File settings — chunk_size is the raw bytes per chunk (header is added on top).
-    # 1490 is just under the Q-level capacity (1505) so we maximise per-QR payload.
-    chunk_size: int = 1490
-    error_correction: str = "Q"
+    # Default to "Robust" (H-level error correction): tolerates ~30% damage vs
+    # 25% for Q level. Screen-captured QRs benefit substantially because of
+    # JPEG-style compression artefacts, monitor backlight bleed, and partial
+    # occlusion from cursors/notifications. 1140 is just under the H-level
+    # capacity (1150).
+    chunk_size: int = 1140
+    error_correction: str = "H"
 
     # Display settings — 0.1s = 10 FPS, a good balance between throughput and
     # what a typical screen-capture client can reliably read.
@@ -40,7 +44,7 @@ class ServerConfig:
 
     # QR settings
     qr_version: Optional[int] = None
-    qr_border: int = 4
+    qr_border: int = 6  # quiet zone in modules — wider than the 4-module spec minimum
     qr_box_size: int = 10
 
     # Output settings
@@ -96,8 +100,11 @@ class ServerConfig:
         if self.max_file_size <= 0:
             errors.append("max_file_size must be positive")
 
-        if self.qr_grid_size not in [1, 2, 3, 4]:
-            errors.append("qr_grid_size must be 1, 2, 3, or 4 (for 1x1, 2x2, 3x3, 4x4 grids)")
+        # qr_grid_size is the larger dimension of the display grid. Auto-fit
+        # mode can produce wide non-square grids (e.g. 12×7), so allow any
+        # positive value up to a sane cap.
+        if self.qr_grid_size < 1 or self.qr_grid_size > 32:
+            errors.append("qr_grid_size must be between 1 and 32")
 
         if self.qr_physical_size <= 50 or self.qr_physical_size > 1000:
             errors.append("qr_physical_size must be between 50 and 1000 pixels")

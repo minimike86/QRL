@@ -21,7 +21,11 @@ class ClientConfig:
     # legacy alias for primary.
     monitor: int = 1
     interval: float = 0.05
-    timeout: int = 300
+    # Safety cap on capture duration — stops the loop if it never decodes,
+    # so the client doesn't spin forever on a frozen server. Default = 24h
+    # which is effectively "no auto-stop" for normal use. The user can stop
+    # any time via the Stop button.
+    timeout: int = 24 * 60 * 60
     region: Optional[Tuple[int, int, int, int]] = None
 
     # Processing settings

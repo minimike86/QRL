@@ -112,19 +112,26 @@ class TestServerGUIEncodingFlow(unittest.TestCase):
         except tk.TclError:
             pass
 
-    def test_worker_prepares_chunks_and_caches_images(self):
+    def test_worker_prepares_chunks_without_prefetch(self):
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
         tmp.write(b"GUI encoding test payload " * 50)
         tmp.close()
         try:
             self.gui.current_file = tmp.name
+            self.gui._current_size_bytes = Path(tmp.name).stat().st_size
             self.gui.file_path_var.set(tmp.name)
             self.gui._encode_worker()  # synchronous
 
             self.assertIsNotNone(self.gui.encoder)
             self.assertGreater(self.gui.encoder.get_total_chunks(), 0)
             self.assertEqual(self.gui.total_chunks, self.gui.encoder.get_total_chunks())
-            self.assertIsNotNone(self.gui.encoder.get_qr_images())
+            # Prefetch is gone — QR images are generated on the fly during
+            # display. The lazy cache exists but is empty until display starts.
+            self.assertEqual(self.gui._qr_cache, {})
+            # Lazy generation works on demand:
+            img = self.gui._lazy_qr_image(0)
+            self.assertTrue(hasattr(img, "save"))
+            self.assertIn(0, self.gui._qr_cache)
         finally:
             Path(tmp.name).unlink(missing_ok=True)
 

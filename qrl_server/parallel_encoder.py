@@ -182,22 +182,40 @@ class ParallelQREncoder:
             return [flat]
         return [flat[r * grid_size:(r + 1) * grid_size] for r in range(grid_size)]
 
-    def prefetch_all_qr_sets(self, max_workers: Optional[int] = None) -> List[List[Image.Image]]:
-        """Pre-generate every QR for every chunk index, in parallel processes.
+    def prefetch_all_qr_sets(
+        self,
+        max_workers: Optional[int] = None,
+        progress_callback=None,
+    ) -> List[List[Image.Image]]:
+        """Pre-generate every QR for every chunk index, in parallel.
 
         Returns a list of length total_chunks_per_stream where each entry
-        is a list of num_streams QR images."""
+        is a list of num_streams QR images.
+
+        progress_callback(done_sets, total_sets) is invoked as sets finish."""
         if not self._stream_chunks:
             raise ValueError("Streams not prepared.")
 
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         import os
 
         if max_workers is None:
             max_workers = max(2, os.cpu_count() or 4)
 
+        total = self._total_chunks_per_stream
+        results: List[Optional[List[Image.Image]]] = [None] * total
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            return list(pool.map(self.generate_qr_set, range(self._total_chunks_per_stream)))
+            futures = {
+                pool.submit(self.generate_qr_set, i): i for i in range(total)
+            }
+            done = 0
+            for fut in as_completed(futures):
+                i = futures[fut]
+                results[i] = fut.result()
+                done += 1
+                if progress_callback is not None:
+                    progress_callback(done, total)
+        return results  # type: ignore[return-value]
 
     def get_total_chunks(self) -> int:
         """Get total number of chunk sets needed."""

@@ -60,8 +60,17 @@ class QRGenerator:
         'H': 1150,  # v40 H alpha cap 1852 -> 1157
     }
 
+    # Generous quiet zone (white border in modules). The QR spec requires 4
+    # modules minimum but screen-captured QRs benefit from more — the bigger
+    # margin gives the client's QR detector a stronger signal to lock onto
+    # the finder patterns even with surrounding visual noise.
+    DEFAULT_BORDER = 6
+    DEFAULT_BOX_SIZE = 10
+
     def __init__(self, data: bytes, version: Optional[int] = None,
-                 error_correction: str = "Q"):
+                 error_correction: str = "Q",
+                 border: Optional[int] = None,
+                 box_size: Optional[int] = None):
         """
         Initialize the QR generator.
 
@@ -69,10 +78,14 @@ class QRGenerator:
             data: Binary data to encode
             version: QR code version (1-40), None for auto
             error_correction: Error correction level (L/M/Q/H)
+            border: Quiet-zone width in modules (default DEFAULT_BORDER)
+            box_size: Pixel size per module (default DEFAULT_BOX_SIZE)
         """
         self.data = data
         self.version = version
         self.error_correction = error_correction
+        self.border = self.DEFAULT_BORDER if border is None else border
+        self.box_size = self.DEFAULT_BOX_SIZE if box_size is None else box_size
 
         if error_correction not in self.ERROR_LEVELS:
             raise ValueError(f"Invalid error correction level: {error_correction}")
@@ -112,8 +125,8 @@ class QRGenerator:
         qr = qrcode.QRCode(
             version=self.version,
             error_correction=self.ERROR_LEVELS[self.error_correction],
-            box_size=10,
-            border=4,
+            box_size=self.box_size,
+            border=self.border,
         )
         qr.add_data(_b32_encode_stripped(self.data))
         qr.make(fit=True)

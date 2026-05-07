@@ -221,22 +221,11 @@ class QRLClientGUI:
             self.preset_buttons.append(btn)
         self._set_speed_preset(self.config.interval, refresh_only=True)
 
-        # Timeout
-        timeout_row = ttk.Frame(speed_card, style="Card.TFrame")
-        timeout_row.pack(fill=tk.X, pady=(10, 0))
-        ttk.Label(timeout_row, text="Stop after:", style="Card.TLabel").pack(side=tk.LEFT)
-        self.timeout_var = tk.IntVar(value=self.config.timeout)
-        ttk.Spinbox(
-            timeout_row,
-            from_=10,
-            to=3600,
-            increment=10,
-            width=6,
-            textvariable=self.timeout_var,
-        ).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Label(
-            timeout_row, text="seconds", style="CardMuted.TLabel"
-        ).pack(side=tk.LEFT, padx=(6, 0))
+            speed_card,
+            text="Capture runs until decoding completes — click Stop to end early.",
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(10, 0))
 
         # === 4. Primary action ===
         action_card = card(parent)
@@ -357,7 +346,6 @@ class QRLClientGUI:
 
     def _bind_events(self) -> None:
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
-        self.timeout_var.trace("w", lambda *_: self._update_config_from_ui())
 
     # ------------------------------------------------------------------
     # Config plumbing
@@ -370,10 +358,9 @@ class QRLClientGUI:
         self._update_ui_from_config()
 
     def _update_config_from_ui(self) -> None:
-        try:
-            self.config.timeout = self.timeout_var.get()
-        except (tk.TclError, ValueError):
-            pass
+        # Most config values are mutated directly by their UI handlers now;
+        # this is left for future per-widget bindings.
+        return
 
     def _on_monitor_selected(self) -> None:
         label = self.monitor_label_var.get()
@@ -383,7 +370,6 @@ class QRLClientGUI:
                 break
 
     def _update_ui_from_config(self) -> None:
-        self.timeout_var.set(self.config.timeout)
         self._set_speed_preset(self.config.interval, refresh_only=True)
         # Sync the screen combobox with the saved config monitor index
         if self._monitor_list:
@@ -527,30 +513,58 @@ class QRLClientGUI:
     # ------------------------------------------------------------------
     # Live preview (runs on main thread via root.after)
     # ------------------------------------------------------------------
+    # Refresh interval — 200 ms = 5 FPS. The preview is a sanity check, not a
+    # video player; a higher rate competes with capture/decode for CPU and is
+    # the main reason the GUI feels laggy.
+    _PREVIEW_INTERVAL_MS = 200
+    # Resampling kernel — BILINEAR is ~10x faster than LANCZOS and indistinguishable
+    # at preview sizes (200-400 px).
+    _PREVIEW_RESAMPLE = Image.Resampling.BILINEAR
+
     def _schedule_preview_refresh(self) -> None:
         self._refresh_preview()
-        # 30 FPS preview refresh — independent of capture rate
-        self.root.after(33, self._schedule_preview_refresh)
+        self.root.after(self._PREVIEW_INTERVAL_MS, self._schedule_preview_refresh)
 
     def _refresh_preview(self) -> None:
         frame = self._latest_preview
         if frame is None:
             return
         try:
-            if frame.ndim == 3 and frame.shape[2] >= 3:
-                # capture frames are BGR (cv2 convention)
-                rgb = cv2.cvtColor(frame[:, :, :3], cv2.COLOR_BGR2RGB)
-                pil = Image.fromarray(rgb)
-            else:
-                pil = Image.fromarray(frame)
-
             cw = max(self.preview_canvas.winfo_width(), 100)
             ch = max(self.preview_canvas.winfo_height(), 100)
-            pil.thumbnail((cw - 4, ch - 4), Image.Resampling.LANCZOS)
+
+            # Subsample BEFORE color conversion so we're not paying RGB->BGR
+            # cost on the full-resolution frame. For a 4K capture this turns
+            # 8MP of work into ~100KP.
+            target_w = cw - 4
+            target_h = ch - 4
+            fh, fw = frame.shape[:2]
+            stride = max(1, min(fw // target_w, fh // target_h))
+            sub = frame[::stride, ::stride]
+
+            if sub.ndim == 3 and sub.shape[2] >= 3:
+                rgb = cv2.cvtColor(sub[:, :, :3], cv2.COLOR_BGR2RGB)
+                pil = Image.fromarray(rgb)
+            else:
+                pil = Image.fromarray(sub)
+
+            # Final fit to canvas with cheap resampling
+            if pil.size[0] > target_w or pil.size[1] > target_h:
+                pil.thumbnail((target_w, target_h), self._PREVIEW_RESAMPLE)
+
+            # Reuse one canvas image item rather than delete+recreate every frame —
+            # reduces Tk allocation churn and avoids a noticeable flicker.
             self._preview_photo = ImageTk.PhotoImage(pil)
-            self.preview_canvas.delete("all")
-            self.preview_canvas.create_image(cw // 2, ch // 2, image=self._preview_photo)
-            self.preview_info_var.set(f"{pil.size[0]}×{pil.size[1]}")
+            if getattr(self, "_preview_canvas_id", None) is None:
+                self._preview_canvas_id = self.preview_canvas.create_image(
+                    cw // 2, ch // 2, image=self._preview_photo
+                )
+            else:
+                self.preview_canvas.coords(self._preview_canvas_id, cw // 2, ch // 2)
+                self.preview_canvas.itemconfigure(
+                    self._preview_canvas_id, image=self._preview_photo
+                )
+            self.preview_info_var.set(f"{pil.size[0]}×{pil.size[1]}  ·  preview 5 fps")
         except Exception:
             pass
 

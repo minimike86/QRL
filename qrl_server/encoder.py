@@ -193,16 +193,17 @@ class QRLEncoder:
         self,
         max_workers: Optional[int] = None,
         use_processes: bool = False,
+        progress_callback=None,
     ) -> List[Image.Image]:
         """Generate every QR image upfront and cache them.
 
         Uses ThreadPoolExecutor by default. ProcessPool is faster in theory
         (true parallelism vs GIL-limited threads) but on Windows it deadlocks
         when launched via console_scripts entry points that lack a
-        `if __name__ == '__main__': freeze_support()` guard — child processes
-        re-import the entry module and try to re-run main(). Set use_processes=
-        True only when you've ensured the entry point is multiprocessing-safe.
-        """
+        `if __name__ == '__main__': freeze_support()` guard.
+
+        progress_callback(done, total) is invoked from the worker thread as
+        QRs finish — useful for live activity logs in a GUI."""
         if not self._chunks:
             raise ValueError("Chunks not prepared. Call prepare_chunks() first.")
 
@@ -223,10 +224,27 @@ class QRLEncoder:
         Pool = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
         try:
             with Pool(max_workers=max_workers) as pool:
-                self._qr_images = list(pool.map(_pool_worker_generate, args_iter))
+                results: List[Optional[Image.Image]] = [None] * total
+                # Submit with index so we can place results in order while
+                # still reporting progress as each completes.
+                futures = {
+                    pool.submit(_pool_worker_generate, args): i
+                    for i, args in enumerate(args_iter)
+                }
+                from concurrent.futures import as_completed
+                done = 0
+                for fut in as_completed(futures):
+                    i = futures[fut]
+                    results[i] = fut.result()
+                    done += 1
+                    if progress_callback is not None:
+                        progress_callback(done, total)
+                self._qr_images = results  # type: ignore[assignment]
         except Exception:
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 self._qr_images = list(pool.map(_pool_worker_generate, args_iter))
+                if progress_callback is not None:
+                    progress_callback(total, total)
         return self._qr_images
 
     def save_qr_images(self, output_dir: str) -> List[str]:
