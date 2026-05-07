@@ -15,9 +15,10 @@ from dataclasses import dataclass, asdict
 class ClientConfig:
     """Client configuration settings."""
 
-    # Capture settings
+    # Capture settings — 0.05s = 20 FPS, fast enough to catch a 10 FPS QR feed
+    # with at least one frame per displayed code.
     monitor: int = 0
-    interval: float = 0.5
+    interval: float = 0.05
     timeout: int = 300
     region: Optional[Tuple[int, int, int, int]] = None
 

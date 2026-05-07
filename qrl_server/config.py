@@ -15,12 +15,14 @@ from dataclasses import dataclass, asdict
 class ServerConfig:
     """Server configuration settings."""
 
-    # File settings
-    chunk_size: int = 1024
+    # File settings — chunk_size is the raw bytes per chunk (header is added on top).
+    # 1490 is just under the Q-level capacity (1505) so we maximise per-QR payload.
+    chunk_size: int = 1490
     error_correction: str = "Q"
 
-    # Display settings
-    duration: float = 2.0
+    # Display settings — 0.1s = 10 FPS, a good balance between throughput and
+    # what a typical screen-capture client can reliably read.
+    duration: float = 0.1
     repeat: bool = True
     window_title: str = "QRL Server"
     window_width: int = 800
@@ -30,6 +32,11 @@ class ServerConfig:
     # Multi-QR grid settings for higher throughput
     qr_grid_size: int = 1      # 1x1, 2x2, 3x3, or 4x4 QR grid
     qr_physical_size: int = 400  # Physical size of each QR code in pixels
+
+    # Pre-generate every QR image upfront (faster display, more memory).
+    # Auto-disabled for files larger than `prefetch_max_bytes`.
+    prefetch_qr_images: bool = True
+    prefetch_max_bytes: int = 5 * 1024 * 1024  # 5 MB
 
     # QR settings
     qr_version: Optional[int] = None
@@ -94,6 +101,9 @@ class ServerConfig:
 
         if self.qr_physical_size <= 50 or self.qr_physical_size > 1000:
             errors.append("qr_physical_size must be between 50 and 1000 pixels")
+
+        if self.prefetch_max_bytes <= 0:
+            errors.append("prefetch_max_bytes must be positive")
 
         if errors:
             raise ValueError(f"Configuration validation failed: {'; '.join(errors)}")

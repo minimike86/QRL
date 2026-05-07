@@ -36,6 +36,7 @@ dependencies = [
     "colorama>=0.4.4",
     "tqdm>=4.62.0",
     "pyyaml>=6.0.3",
+    "mss>=9.0.1",
 ]
 
 [project.urls]

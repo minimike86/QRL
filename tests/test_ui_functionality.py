@@ -43,9 +43,9 @@ class TestQRCapacityValidation(unittest.TestCase):
         self.assertLess(cap_q, cap_m)
         self.assertLess(cap_m, cap_l)
 
-        # Verify reasonable ranges
-        self.assertGreater(cap_h, 500)  # At least 500 bytes
-        self.assertLess(cap_l, 3000)    # Less than 3KB
+        # Verify reasonable ranges (alphanumeric-mode payloads are larger)
+        self.assertGreater(cap_h, 500)
+        self.assertLess(cap_l, 4096)
 
 
 class TestOnTheFlyEncoding(unittest.TestCase):
@@ -223,15 +223,11 @@ class TestIntegrationWorkflow(unittest.TestCase):
 
     def test_qr_capacity_enforcement(self):
         """Test that QR capacity limits are enforced."""
-        # Create encoder with chunk size that's too large for Q level
         encoder = QRLEncoder(self.test_file.name, chunk_size=2000, error_correction="Q")
-
-        self.assertTrue(encoder.validate())  # File validation passes
-
-        # But should fail during QR generation
-        encoder.prepare_chunks()
-        with self.assertRaises(Exception):  # Should fail when generating QR
-            encoder.generate_qr_for_chunk(0)
+        self.assertTrue(encoder.validate())
+        # Preflight should reject chunk_size that exceeds the Q-level QR capacity
+        with self.assertRaises(ValueError):
+            encoder.prepare_chunks()
 
 
 def run_functionality_tests():

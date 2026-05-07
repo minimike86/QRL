@@ -65,9 +65,9 @@ class ParallelQREncoder:
         if not self._data:
             raise ValueError("No data to encode")
 
-        # Calculate effective chunk size accounting for metadata overhead
-        # Each chunk needs: stream_id(1) + sequence_number(4) + total_chunks(4) + data
-        metadata_overhead = 9  # bytes
+        # Effective per-chunk data after the 9-byte wire-format header.
+        from .chunk import HEADER_SIZE
+        metadata_overhead = HEADER_SIZE
         effective_chunk_size = self.chunk_size - metadata_overhead
 
         if effective_chunk_size <= 0:
@@ -112,16 +112,20 @@ class ParallelQREncoder:
         # Calculate total chunks needed (max across all streams)
         self._total_chunks_per_stream = max(stream_info.values()) if stream_info else 0
 
-        # Store metadata
+        # Store metadata. `total_size` and `total_chunks` mirror the single-stream
+        # encoder's keys so the GUI can read both modes uniformly.
         self._metadata = {
             'source_path': str(self.source_path),
+            'total_size': total_data_size,
             'total_data_size': total_data_size,
             'num_streams': self.num_streams,
             'chunks_per_stream': stream_info,
+            'total_chunks': self._total_chunks_per_stream,
             'total_chunks_per_stream': self._total_chunks_per_stream,
             'chunk_size': self.chunk_size,
             'effective_chunk_size': effective_chunk_size,
-            'error_correction': self.error_correction
+            'error_correction': self.error_correction,
+            'is_directory': self.source_path.is_dir(),
         }
 
         print(f"Parallel encoding prepared:")
@@ -134,14 +138,9 @@ class ParallelQREncoder:
 
     def _create_chunk_with_metadata(self, stream_id: int, sequence: int,
                                    total_chunks: int, data: bytes) -> bytes:
-        """Create chunk with embedded metadata."""
-        # Format: [stream_id:1][sequence:4][total_chunks:4][data:remaining]
-        metadata = (
-            stream_id.to_bytes(1, 'big') +
-            sequence.to_bytes(4, 'big') +
-            total_chunks.to_bytes(4, 'big')
-        )
-        return metadata + data
+        """Create chunk with embedded metadata using the shared wire format."""
+        from .chunk import pack_header
+        return pack_header(stream_id, sequence, total_chunks) + data
 
     def generate_qr_grid(self, chunk_index: int) -> List[List[Image.Image]]:
         """

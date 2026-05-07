@@ -632,6 +632,21 @@ increase throughput for large files by bypassing single-QR size limits."""
                 total_chunks = self.encoder.prepare_chunks()
                 self._log(f"Data prepared: {total_chunks:,} chunks ready for streaming QR generation")
 
+                # Pre-generate every QR image when the file is small enough.
+                # This keeps display hot at high FPS — no per-frame qrcode encode.
+                if (
+                    getattr(self.config, "prefetch_qr_images", True)
+                    and file_size <= getattr(self.config, "prefetch_max_bytes", 5 * 1024 * 1024)
+                ):
+                    self.root.after(0, lambda: self.progress_label_var.set("Pre-generating QR images..."))
+                    prefetch_start = time.time()
+                    self.encoder.prefetch_qr_images()
+                    prefetch_elapsed = time.time() - prefetch_start
+                    self._log(
+                        f"Pre-generated {total_chunks:,} QR images in "
+                        f"{prefetch_elapsed:.2f}s ({total_chunks / max(prefetch_elapsed, 1e-3):.0f} QR/s)"
+                    )
+
                 metadata = self.encoder.get_metadata()
                 metadata['encoding_type'] = 'traditional'
 
@@ -771,13 +786,18 @@ Ready to display QR codes. QR codes will be generated as needed during display."
                 grid_size = int(self.parallel_streams_var.get() ** 0.5)  # sqrt for grid dimensions
 
             else:
-                # Traditional encoding mode - generate sequential QR codes
+                # Traditional encoding mode - generate sequential QR codes.
+                # Use pre-cached images when available (much faster at high FPS).
                 grid_size = self.config.qr_grid_size
                 qr_images = []
+                cached = self.encoder.get_qr_images() if self.encoder else None
 
                 for i in range(grid_size * grid_size):
                     chunk_idx = (self.current_qr_index + i) % self.total_chunks
-                    qr_image = self.encoder.generate_qr_for_chunk(chunk_idx)
+                    if cached is not None:
+                        qr_image = cached[chunk_idx]
+                    else:
+                        qr_image = self.encoder.generate_qr_for_chunk(chunk_idx)
                     qr_images.append(qr_image)
 
             # Create grid layout
