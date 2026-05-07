@@ -16,14 +16,40 @@ Reserved stream_ids:
           pre-configure it.
 """
 
+import gzip
 import io
 import json
 import tarfile
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 HEADER_SIZE = 9
 MANIFEST_STREAM_ID = 255
+
+# Skip compression if it doesn't shrink the data by at least this fraction.
+# Compression metadata adds ~10-20 bytes overhead so a near-zero ratio is
+# wasted work AND wasted bytes.
+COMPRESSION_THRESHOLD = 0.95
+
+
+def maybe_compress(data: bytes, level: int = 6) -> Tuple[bytes, bool]:
+    """Try gzip-compressing data. Returns (output, was_compressed).
+
+    If the compressed payload is bigger than `data * COMPRESSION_THRESHOLD`
+    we return the original — already-compressed inputs (JPEG, MP4, ZIP)
+    don't shrink, and using them compressed would actually slow throughput."""
+    if len(data) < 256:
+        # Tiny payloads: gzip header overhead dominates, skip
+        return data, False
+    compressed = gzip.compress(data, compresslevel=level, mtime=0)
+    if len(compressed) >= len(data) * COMPRESSION_THRESHOLD:
+        return data, False
+    return compressed, True
+
+
+def decompress(data: bytes) -> bytes:
+    """Inverse of maybe_compress when the manifest says compressed=True."""
+    return gzip.decompress(data)
 
 
 def build_manifest_chunk(manifest: dict) -> bytes:

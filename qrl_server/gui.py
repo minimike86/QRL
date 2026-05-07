@@ -7,6 +7,7 @@ flashing QR display opens in its own window optimised for tight capture from
 the QRL Client.
 """
 
+import collections
 import sys
 import threading
 import time
@@ -52,6 +53,55 @@ QUALITY_PRESETS = [
     ("Balanced", "Q", 1490),
     ("Robust", "H", 1140),
 ]
+
+# Maximum entries in the lazy QR cache. Each cached QR image is small (mode-1
+# bitmap, ~5-30 KB), but for very large files the cache could otherwise grow
+# unboundedly — 100 MB / 1140 B/QR is ~88,000 chunks worth of images.
+# The display only needs the next few frames to be hot at any moment, so
+# evicting old entries is safe.
+QR_CACHE_MAX = 4096
+
+
+class _LRUDict:
+    """Simple LRU dict — popping from the front on overflow keeps memory
+    bounded while letting the display loop iterate sequentially without
+    ever missing a cached frame.
+
+    Composition (rather than OrderedDict subclassing) avoids subtle issues
+    where dict-method-overrides in a C-backed subclass aren't always called
+    by the parent's internal methods."""
+
+    def __init__(self, max_size: int):
+        self._d: "collections.OrderedDict" = collections.OrderedDict()
+        self._max = max_size
+
+    def __contains__(self, key) -> bool:
+        return key in self._d
+
+    def __getitem__(self, key):
+        value = self._d[key]
+        self._d.move_to_end(key)  # mark recently used
+        return value
+
+    def __setitem__(self, key, value) -> None:
+        if key in self._d:
+            self._d.move_to_end(key)
+        self._d[key] = value
+        while len(self._d) > self._max:
+            self._d.popitem(last=False)
+
+    def __len__(self) -> int:
+        return len(self._d)
+
+    def __iter__(self):
+        return iter(self._d)
+
+    def keys(self):
+        return self._d.keys()
+
+    def values(self):
+        return self._d.values()
+
 
 # Pixel-density presets — (label, pixels per QR module).
 # Higher density = sharper QRs (more pixels per black/white cell), bigger
@@ -706,9 +756,10 @@ class QRLServerGUI:
                 self.use_parallel_encoding = self._mode_streams > 1
                 self._log_main(f"▸ Auto-grid: {cols}×{rows} = {cols*rows} parallel streams")
 
-            # Reset caches — they're rebuilt lazily during display
-            self._qr_cache: dict = {}
-            self._qr_set_cache: dict = {}
+            # Reset caches — bounded LRU so very large files (tens of
+            # thousands of chunks) don't blow memory.
+            self._qr_cache = _LRUDict(QR_CACHE_MAX)
+            self._qr_set_cache = _LRUDict(QR_CACHE_MAX)
             self._manifest_qr_image = None
 
             if self.use_parallel_encoding:
@@ -731,6 +782,14 @@ class QRLServerGUI:
                     self.config.duration
                 )
                 total_qrs = self.total_chunks * streams
+                if self.parallel_encoder._compressed:
+                    ratio = self.parallel_encoder._original_size / max(len(self.parallel_encoder._data), 1)
+                    self._log_main(
+                        f"  Compressed {self.parallel_encoder._original_size:,} → "
+                        f"{len(self.parallel_encoder._data):,} bytes ({ratio:.1f}× speedup over the wire)"
+                    )
+                else:
+                    self._log_main("  Skipping compression (data doesn't shrink — already compressed)")
                 self._log_main(
                     f"  {self.total_chunks:,} chunks/stream  ·  "
                     f"{total_qrs:,} QR images total  ·  "
@@ -746,6 +805,14 @@ class QRLServerGUI:
                     border=self.config.qr_border,
                 )
                 self.total_chunks = self.encoder.prepare_chunks()
+                if self.encoder._compressed:
+                    ratio = self.encoder._original_size / max(len(self.encoder._data), 1)
+                    self._log_main(
+                        f"  Compressed {self.encoder._original_size:,} → "
+                        f"{len(self.encoder._data):,} bytes ({ratio:.1f}× speedup over the wire)"
+                    )
+                else:
+                    self._log_main("  Skipping compression (data doesn't shrink — already compressed)")
                 self._log_main(f"  {self.total_chunks:,} chunks ready")
 
             self._log_main("▸ Ready to display — QRs generate in background while you watch")
@@ -761,12 +828,23 @@ class QRLServerGUI:
             self.root.after(0, self._update_button_states)
 
     def _start_background_prefetch(self) -> None:
-        """Populate the QR cache in a background thread without blocking the
-        display loop. Display reads from the cache when available, falls back
-        to inline generation if the prefetch hasn't reached that index yet."""
-        # Cancel any prior prefetch by bumping a generation token
+        """Background QR prefetch.
+
+        For files that fit in the LRU cache (small/medium): runs to completion
+        and leaves every QR cached. Display reads from cache after the first
+        moment and runs at full FPS.
+
+        For files larger than the cache: stays AHEAD of the display position
+        by a fixed window (LOOKAHEAD entries). Old entries are evicted as
+        new ones come in. Display still benefits — every frame is a cache
+        hit at the moment it's needed."""
         self._prefetch_gen = getattr(self, "_prefetch_gen", 0) + 1
         gen = self._prefetch_gen
+
+        # How far ahead of the display index to stay. Smaller = less wasted
+        # work if user stops early; larger = more cushion when generation
+        # is slower than display rate.
+        LOOKAHEAD = 256
 
         def _root_alive() -> bool:
             try:
@@ -774,42 +852,60 @@ class QRLServerGUI:
             except (tk.TclError, RuntimeError, AttributeError):
                 return False
 
+        def _display_position() -> int:
+            return self.current_qr_index if self.is_displaying else 0
+
         def worker():
             try:
                 t0 = time.time()
                 if self.use_parallel_encoding and self.parallel_encoder is not None:
                     total = self.total_chunks
                     streams = self._mode_streams
+                    bounded = total > QR_CACHE_MAX
                     last_decile = -1
                     for i in range(total):
                         if gen != self._prefetch_gen or not _root_alive():
-                            return  # superseded or GUI gone
+                            return
+                        # Stay within LOOKAHEAD of the display position when
+                        # the file exceeds the cache — otherwise the LRU
+                        # would just evict our work before display sees it.
+                        while bounded and (i - _display_position()) > LOOKAHEAD:
+                            if gen != self._prefetch_gen or not _root_alive():
+                                return
+                            time.sleep(0.05)
                         if i not in self._qr_set_cache:
                             self._qr_set_cache[i] = self.parallel_encoder.generate_qr_set(i)
                         decile = (i + 1) * 10 // max(total, 1)
                         if decile > last_decile and decile < 10:
                             last_decile = decile
-                            self._log_main(f"  …prefetched {decile*10}% ({i+1}/{total} sets, {streams * (i+1):,} QRs)")
+                            self._log_main(
+                                f"  …generated {decile*10}% ({i+1}/{total} sets, {streams * (i+1):,} QRs)"
+                            )
                     elapsed = time.time() - t0
-                    self._log_main(
-                        f"  ✓ Cache full: {total * streams:,} QRs ready ({elapsed:.1f}s)"
-                    )
+                    msg = "Cache full" if not bounded else "All QRs generated"
+                    self._log_main(f"  ✓ {msg}: {total * streams:,} QRs in {elapsed:.1f}s")
                 elif self.encoder is not None:
                     total = self.total_chunks
+                    bounded = total > QR_CACHE_MAX
                     last_decile = -1
                     for i in range(total):
                         if gen != self._prefetch_gen or not _root_alive():
                             return
+                        while bounded and (i - _display_position()) > LOOKAHEAD:
+                            if gen != self._prefetch_gen or not _root_alive():
+                                return
+                            time.sleep(0.05)
                         if i not in self._qr_cache:
                             self._qr_cache[i] = self.encoder.generate_qr_for_chunk(i)
                         decile = (i + 1) * 10 // max(total, 1)
                         if decile > last_decile and decile < 10:
                             last_decile = decile
-                            self._log_main(f"  …prefetched {decile*10}% ({i+1}/{total} QRs)")
+                            self._log_main(f"  …generated {decile*10}% ({i+1}/{total} QRs)")
                     elapsed = time.time() - t0
-                    self._log_main(f"  ✓ Cache full: {total:,} QRs ready ({elapsed:.1f}s)")
+                    msg = "Cache full" if not bounded else "All QRs generated"
+                    self._log_main(f"  ✓ {msg}: {total:,} QRs in {elapsed:.1f}s")
             except Exception as e:
-                self._log_main(f"  ✗ Background prefetch error: {e}")
+                self._log_main(f"  ✗ Background generation error: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1047,12 +1143,12 @@ class QRLServerGUI:
             set_status(self.status_label, "error", "Display error")
 
     # ------------------------------------------------------------------
-    # Lazy QR generation — generate on first access, cache forever after
+    # Lazy QR generation — generate on first access, cache with LRU bound
     # ------------------------------------------------------------------
     def _lazy_qr_image(self, chunk_idx: int) -> Image.Image:
         cache = getattr(self, "_qr_cache", None)
         if cache is None:
-            self._qr_cache = cache = {}
+            self._qr_cache = cache = _LRUDict(QR_CACHE_MAX)
         if chunk_idx not in cache:
             cache[chunk_idx] = self.encoder.generate_qr_for_chunk(chunk_idx)
         return cache[chunk_idx]
@@ -1060,7 +1156,7 @@ class QRLServerGUI:
     def _lazy_qr_set(self, set_idx: int) -> List[Image.Image]:
         cache = getattr(self, "_qr_set_cache", None)
         if cache is None:
-            self._qr_set_cache = cache = {}
+            self._qr_set_cache = cache = _LRUDict(QR_CACHE_MAX)
         if set_idx not in cache:
             cache[set_idx] = self.parallel_encoder.generate_qr_set(set_idx)
         return cache[set_idx]

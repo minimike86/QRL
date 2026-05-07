@@ -78,8 +78,11 @@ class TestParallelEncoderMetadata(unittest.TestCase):
 
 class TestThroughputStats(unittest.TestCase):
     def test_calculates_speedup_factor_above_1_for_parallel(self):
+        # Use random bytes — gzip wouldn't shrink them, so the parallel
+        # speedup math actually has multiple chunks to work with.
+        import os as _os
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
-        tmp.write(b"x" * 2000)
+        tmp.write(_os.urandom(2000))
         tmp.close()
         try:
             encoder = ParallelQREncoder(tmp.name, num_streams=4, chunk_size=300)

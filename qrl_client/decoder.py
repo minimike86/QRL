@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Tuple
 from qrl_server.chunk import (
     HEADER_SIZE,  # noqa: F401
     MANIFEST_STREAM_ID,
+    decompress,
     parse_manifest_payload,
     unpack_header,
 )
@@ -212,11 +213,21 @@ class QRLDecoder:
                 parts.append(chunks[seq])
         data = b"".join(parts)
 
-        # Manifest tells us the original size — strip stream-padding if present
+        # Manifest tells us the wire size — strip stream-padding if present.
         if self._manifest is not None:
             declared_size = self._manifest.get("size")
             if isinstance(declared_size, int) and 0 < declared_size <= len(data):
                 data = data[:declared_size]
+
+        # If the server compressed the data, decompress it now (back to
+        # original_size bytes).
+        if self._manifest is not None and self._manifest.get("compressed"):
+            try:
+                data = decompress(data)
+            except Exception as e:
+                # Fall through and write the (broken) compressed bytes so the
+                # user can debug; better than losing the transfer entirely.
+                self._decompress_error = str(e)
 
         # If the manifest declared this was a directory, the data is a tar
         # archive — extract it into the output folder instead of writing the

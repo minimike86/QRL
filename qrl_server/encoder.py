@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from PIL import Image
 
-from .chunk import ChunkManager, build_manifest_chunk
+from .chunk import ChunkManager, build_manifest_chunk, maybe_compress
 
 
 class QRLEncoder:
@@ -40,6 +40,9 @@ class QRLEncoder:
         self._chunks: Optional[List[bytes]] = None
         self._qr_images: Optional[List[Image.Image]] = None
         self._metadata: Optional[dict] = None
+        # Compression metadata, set during _load_data
+        self._compressed: bool = False
+        self._original_size: int = 0
 
     def encode(self) -> List[Image.Image]:
         """Prepare chunks and pre-generate every QR image. Returns the list of images."""
@@ -74,17 +77,20 @@ class QRLEncoder:
         return False
 
     def _load_data(self) -> None:
-        """Load data from source path."""
+        """Load data from source path. Auto-compresses if it actually shrinks."""
         if self._data is not None:
             return
 
         try:
             if self.source_path.is_file():
-                self._data = ChunkManager.read_file(str(self.source_path))
+                raw = ChunkManager.read_file(str(self.source_path))
             elif self.source_path.is_dir():
-                self._data = ChunkManager.read_directory(str(self.source_path))
+                raw = ChunkManager.read_directory(str(self.source_path))
             else:
                 raise ValueError(f"Unsupported source type: {self.source_path}")
+
+            self._original_size = len(raw)
+            self._data, self._compressed = maybe_compress(raw)
 
         except Exception as e:
             raise ValueError(f"Failed to load data from {self.source_path}: {e}")
@@ -180,10 +186,14 @@ class QRLEncoder:
 
     def build_manifest(self, num_streams: int = 1) -> dict:
         """Manifest dict that the client uses to derive output filename + sanity-check."""
+        # `size` = bytes the client receives over the wire (compressed if we compressed).
+        # `original_size` = bytes after decompression (= file size on disk).
         return {
             "v": 1,
             "filename": self.source_path.name,
             "size": len(self._data) if self._data else 0,
+            "original_size": self._original_size,
+            "compressed": self._compressed,
             "is_directory": self.source_path.is_dir() if self.source_path.exists() else False,
             "num_streams": num_streams,
             "total_chunks": self.get_total_chunks(),

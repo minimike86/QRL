@@ -45,8 +45,11 @@ class TestSingleStreamRoundTrip(unittest.TestCase):
         encoder = QRLEncoder(src, chunk_size=chunk_size, error_correction=error_correction)
         qr_images = encoder.encode()
         self.assertGreater(len(qr_images), 0)
+        manifest_qr = encoder.generate_manifest_qr(num_streams=1)
 
         decoder = QRLDecoder(out)
+        # Feed manifest first so the decoder knows compression state, then data
+        decoder.decode([manifest_qr.convert("RGB")])
         for img in qr_images:
             decoder.decode([img.convert("RGB")])
 
@@ -83,8 +86,11 @@ class TestParallelStreamRoundTrip(unittest.TestCase):
         )
         encoder.prepare_parallel_streams()
         total_sets = encoder.get_total_chunks()
+        manifest_qr = encoder.generate_manifest_qr()
 
         decoder = QRLDecoder(out)
+        # Feed manifest first so the decoder knows compression state
+        decoder.decode([manifest_qr.convert("RGB")])
         for set_idx in range(total_sets):
             grid = encoder.generate_qr_grid(set_idx)
             frames = []

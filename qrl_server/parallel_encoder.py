@@ -11,7 +11,7 @@ from typing import List, Dict, Tuple, Optional
 from PIL import Image
 import math
 
-from .chunk import ChunkManager, build_manifest_chunk
+from .chunk import ChunkManager, build_manifest_chunk, maybe_compress
 from .qr_generator import QRGenerator
 
 
@@ -48,6 +48,8 @@ class ParallelQREncoder:
         self._stream_chunks = {}  # {stream_id: [chunks]}
         self._total_chunks_per_stream = 0
         self._metadata = None
+        self._compressed: bool = False
+        self._original_size: int = 0
 
     def prepare_parallel_streams(self) -> Dict[int, int]:
         """
@@ -59,16 +61,19 @@ class ParallelQREncoder:
         if not self.source_path.exists():
             raise ValueError(f"Source path does not exist: {self.source_path}")
 
-        # Load data
+        # Load data and optionally compress (auto-detected — falls back to
+        # raw if data doesn't actually shrink, e.g. JPEGs or MP4s).
         if self.source_path.is_file():
-            self._data = ChunkManager.read_file(str(self.source_path))
+            raw = ChunkManager.read_file(str(self.source_path))
         elif self.source_path.is_dir():
-            self._data = ChunkManager.read_directory(str(self.source_path))
+            raw = ChunkManager.read_directory(str(self.source_path))
         else:
             raise ValueError(f"Unsupported source type: {self.source_path}")
 
-        if not self._data:
+        if not raw:
             raise ValueError("No data to encode")
+        self._original_size = len(raw)
+        self._data, self._compressed = maybe_compress(raw)
 
         # Effective per-chunk data after the 9-byte wire-format header.
         from .chunk import HEADER_SIZE
@@ -123,6 +128,8 @@ class ParallelQREncoder:
             'source_path': str(self.source_path),
             'total_size': total_data_size,
             'total_data_size': total_data_size,
+            'original_size': self._original_size,
+            'compressed': self._compressed,
             'num_streams': self.num_streams,
             'chunks_per_stream': stream_info,
             'total_chunks': self._total_chunks_per_stream,
@@ -234,6 +241,8 @@ class ParallelQREncoder:
             "v": 1,
             "filename": self.source_path.name,
             "size": len(self._data) if self._data is not None else 0,
+            "original_size": self._original_size,
+            "compressed": self._compressed,
             "is_directory": self.source_path.is_dir() if self.source_path.exists() else False,
             "num_streams": self.num_streams,
             "total_chunks": self._total_chunks_per_stream,

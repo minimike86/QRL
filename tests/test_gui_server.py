@@ -128,8 +128,8 @@ class TestServerGUIEncodingFlow(unittest.TestCase):
             self.assertGreater(self.gui.encoder.get_total_chunks(), 0)
             self.assertEqual(self.gui.total_chunks, self.gui.encoder.get_total_chunks())
             # Prefetch is gone — QR images are generated on the fly during
-            # display. The lazy cache exists but is empty until display starts.
-            self.assertEqual(self.gui._qr_cache, {})
+            # display. The lazy cache (LRU-bounded) is empty until display starts.
+            self.assertEqual(len(self.gui._qr_cache), 0)
             # Lazy generation works on demand:
             img = self.gui._lazy_qr_image(0)
             self.assertTrue(hasattr(img, "save"))
