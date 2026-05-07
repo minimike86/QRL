@@ -1,5 +1,5 @@
 """
-QRL Client - QR Code Data Exfiltration Client
+QRL Client - QR Code Data Transfer Client
 
 Captures and decodes animated QR codes to reconstruct data.
 """

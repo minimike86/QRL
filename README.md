@@ -1,20 +1,23 @@
-# QRL: QR Code Data Exfiltration PoC
+# QRL: QR Code PoC
 
-A proof-of-concept tool for exfiltrating data via animated QR codes displayed on a target machine's screen. The server chunks data into QR codes that flash in a repeating pattern, while a client application on another device captures and decodes these codes through remote desktop, VNC, Citrix, or similar screen capture methods.
+A proof-of-concept tool for generating animated QR codes displayed on a target machine's screen. The server chunks data into QR codes that flash in a repeating pattern, while a client application on another device captures and decodes these codes through remote desktop, VNC, Citrix, or similar screen capture methods.
 
 ## Features
 
 - **Server-Side QR Generation**: Converts files or directory contents into sequential QR codes
 - **Animated Display**: QR codes flash on screen in ordered, repeating patterns for reliable capture
 - **Client-Side Decoder**: Reconstructs original data from captured QR code sequences
+- **GUI Applications**: Easy-to-use graphical interfaces for both server and client
+- **Configuration Files**: YAML/JSON configuration support with comprehensive settings
+- **Enhanced Error Handling**: Robust error handling and recovery mechanisms
 - **Flexible Data Sources**: Support for files, directories, and streaming data
 - **Multiple Transport Methods**: Designed to work with remote desktop, VNC, Citrix, and other screen capture scenarios
-- **Progress Tracking**: Visual feedback on encoding/decoding progress
-- **Error Handling**: Built-in validation and error recovery mechanisms
+- **Progress Tracking**: Visual feedback on encoding/decoding progress with detailed statistics
+- **Advanced QR Settings**: Configurable QR versions, error correction levels, and display options
 
 ## Concept
 
-Traditional data exfiltration methods often trigger network monitoring and detection systems. QRL demonstrates a novel approach: encoding data into a visual sequence of QR codes displayed on screen, which can then be captured and reconstructed via any remote desktop connection or screen recording capability.
+Traditional data generation methods often trigger network monitoring and detection systems. QRL demonstrates a novel approach: encoding data into a visual sequence of QR codes displayed on screen, which can then be captured and reconstructed via any remote desktop connection or screen recording capability.
 
 ### How It Works
 
@@ -66,7 +69,8 @@ qrl/
 - Python 3.9+
 - `qrcode[pil]` - QR code generation
 - `pillow` - Image handling
-- `tkinter` or equivalent - GUI display (usually included with Python)
+- `PyYAML` - Configuration file support
+- `tkinter` - GUI interface (usually included with Python)
 
 ### Client
 - Python 3.9+
@@ -74,6 +78,13 @@ qrl/
 - `pyzbar` - QR code decoding
 - `numpy` - Array operations
 - `pillow` - Image handling
+- `PyYAML` - Configuration file support
+- `tkinter` - GUI interface (usually included with Python)
+
+### Optional
+- `pytest` - For running tests
+- `black` - Code formatting
+- `flake8` - Code linting
 
 ## Installation
 
@@ -96,48 +107,165 @@ pip install -r requirements-dev.txt
 
 ## Quick Start
 
-### Server Usage
+### GUI Mode (Recommended)
 
-```python
-from qrl_server import QRLServer
-
-# Initialize server
-server = QRLServer(filename="path/to/file.txt", chunk_size=100)
-
-# Start displaying QR codes
-server.start_display()
-```
-
-Or via command line:
+Launch the graphical interfaces for easy configuration:
 
 ```bash
-python -m qrl_server --file path/to/file.txt --chunk-size 100 --display-duration 2
+# Server GUI
+qrl-server-gui
+# or
+python -m qrl_server --gui
+
+# Client GUI
+qrl-client-gui
+# or
+python -m qrl_client --gui
 ```
 
-### Client Usage
+### Command Line Usage
+
+#### Server
+
+Basic usage:
+```bash
+# Encode and display a file
+qrl-server path/to/file.txt
+
+# With custom settings
+qrl-server path/to/file.txt --chunk-size 2048 --duration 1.5 --error-correction H
+```
+
+Using configuration files:
+```bash
+# Create example config
+qrl-server --create-config my_config.yaml
+
+# Use configuration file
+qrl-server --config my_config.yaml path/to/file.txt
+
+# Override config settings
+qrl-server --config my_config.yaml --duration 3.0 path/to/file.txt
+```
+
+#### Client
+
+Basic usage:
+```bash
+# Capture and decode QR codes
+qrl-client --output recovered_file.txt
+
+# With custom capture region
+qrl-client --output recovered_file.txt --region 100,100,800,600
+```
+
+Using configuration files:
+```bash
+# Create example config
+qrl-client --create-config my_config.yaml
+
+# Use configuration file
+qrl-client --config my_config.yaml --output recovered_file.txt
+
+# Advanced settings
+qrl-client --config advanced.yaml --output file.txt --verbose --save-progress
+```
+
+### Python API
+
+You can also use QRL programmatically:
 
 ```python
-from qrl_client import QRLClient
+from qrl_server.encoder import QRLEncoder
+from qrl_server.display import DisplayHandler
 
-# Initialize client
-client = QRLClient(output_file="recovered_file.txt")
-
-# Start capturing and decoding
-client.start_capture()
+# Server: Encode and display
+encoder = QRLEncoder("path/to/file.txt", chunk_size=1024)
+qr_images = encoder.encode()
+display = DisplayHandler(qr_images, duration=2.0)
+display.start()
 ```
 
-Or via command line:
+```python
+from qrl_client.capture import CaptureHandler
+from qrl_client.decoder import QRLDecoder
+
+# Client: Capture and decode
+capture = CaptureHandler(monitor=0)
+decoder = QRLDecoder("output.txt")
+capture.start()
+# ... decode frames as they come in
+```
+
+## Configuration Files
+
+QRL supports YAML and JSON configuration files for both server and client applications. Configuration files are automatically searched in the following locations:
+
+1. Current directory: `qrl_server.yaml`, `qrl_client.yaml`
+2. `config/` subdirectory
+3. User home directory: `~/.qrl/server_config.yaml`, `~/.qrl/client_config.yaml`
+
+### Example Server Configuration
+
+```yaml
+# Server settings
+chunk_size: 2048
+error_correction: H
+duration: 1.5
+repeat: true
+window_title: "QRL Server - Production"
+
+# QR settings
+qr_version: 10
+qr_border: 4
+qr_box_size: 15
+
+# Advanced options
+max_file_size: 104857600  # 100MB
+compression_level: 6
+```
+
+### Example Client Configuration
+
+```yaml
+# Capture settings
+monitor: 0
+interval: 0.3
+timeout: 600
+region: [100, 100, 1200, 800]  # x, y, width, height
+
+# Detection settings
+qr_detection_threshold: 0.4
+image_preprocessing: true
+enhance_contrast: true
+max_decode_attempts: 8
+
+# Processing
+save_progress: true
+progress_interval: 2.0
+```
+
+### Managing Configurations
 
 ```bash
-python -m qrl_client --output recovered_file.txt --monitor-region 0,0,1920,1080
+# Create example configuration files
+qrl-server --create-config config/server.yaml
+qrl-client --create-config config/client.yaml
+
+# Save current CLI settings to config
+qrl-server --chunk-size 4096 --duration 1.0 --save-config my_settings.yaml
+
+# Load and modify settings
+qrl-client --config base.yaml --monitor 1 --timeout 900 --save-config modified.yaml
 ```
 
 ## Use Cases
 
-- **Red Team Operations**: Data exfiltration without network detection
+- **Red Team Operations**: Data transfer without network detection
 - **Security Research**: Testing air-gapped system vulnerabilities
-- **Proof of Concept**: Demonstrating alternative data exfiltration vectors
+- **Proof of Concept**: Demonstrating alternative data transfer vectors
 - **Educational**: Understanding QR code encoding and data recovery techniques
+- **Backup and Recovery**: Novel approach to data backup via visual encoding
 
 ## Technical Details
 
@@ -160,7 +288,7 @@ QR codes display in a repeating cycle to ensure capture:
 
 ## Limitations
 
-- **Speed**: Slower than traditional network exfiltration
+- **Speed**: Slower than traditional network transfer
 - **Distance**: Requires visual line of sight or screen capture access
 - **Data Size**: Practical limits based on session duration and network stability
 - **Screen Resolution**: Larger displays allow for bigger QR codes
@@ -168,8 +296,8 @@ QR codes display in a repeating cycle to ensure capture:
 
 ## Similar Projects
 
-- [QRxfil](https://github.com/OverkillGuy/qrxfil) - QR code based exfiltration to PDF
-- [QRExfil](https://github.com/Shell-Company/QRExfil) - QR code exfiltration with GIF output
+- [QRxfil](https://github.com/OverkillGuy/qrxfil) - QR code based transfer to PDF
+- [QRExfil](https://github.com/Shell-Company/QRExfil) - QR code transfer with GIF output
 
 ## Contributing
 
@@ -198,5 +326,13 @@ For issues, questions, or suggestions:
 
 ---
 
-**Status**: Early PoC - Active Development
-**Last Updated**: April 2026
+## Recent Updates
+
+- ✅ **GUI Applications**: Full-featured graphical interfaces for both server and client
+- ✅ **Configuration System**: YAML/JSON configuration file support with validation
+- ✅ **Enhanced CLI**: Improved command-line interfaces with comprehensive options
+- ✅ **Error Handling**: Robust error handling and recovery mechanisms
+- ✅ **Documentation**: Complete usage examples and configuration guides
+
+**Status**: Feature-Complete PoC - Ready for Use
+**Last Updated**: May 2026

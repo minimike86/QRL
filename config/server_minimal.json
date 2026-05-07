@@ -1,0 +1,7 @@
+{
+  "chunk_size": 2048,
+  "duration": 1.5,
+  "error_correction": "H",
+  "repeat": true,
+  "window_title": "QRL Server - High Quality"
+}

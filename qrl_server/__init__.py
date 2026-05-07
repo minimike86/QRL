@@ -1,5 +1,5 @@
 """
-QRL Server - QR Code Data Exfiltration Server
+QRL Server - QR Code Data Transfer Server
 
 Encodes and displays data as animated QR codes.
 """

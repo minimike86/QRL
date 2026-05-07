@@ -1,0 +1,19 @@
+# QRL Server Configuration File
+# This file contains default settings for the QRL server
+# Adjust values as needed for your use case
+
+chunk_size: 1024  # Size of data chunks in bytes (affects QR capacity)
+compression_level: 6
+duration: 2.0  # Display time per QR code in seconds
+error_correction: Q  # QR error correction level: L, M, Q, H (higher = more robust)
+fullscreen: false
+max_file_size: 104857600  # Maximum file size to process (bytes)
+output_format: PNG
+qr_border: 4
+qr_box_size: 10
+qr_version: null  # QR code version (1-40), null = auto-detect
+repeat: true  # Whether to repeat the QR sequence continuously
+save_qr: null
+window_height: 600
+window_title: QRL Server  # Title of the display window
+window_width: 800

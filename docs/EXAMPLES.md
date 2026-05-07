@@ -223,7 +223,7 @@ capture = CaptureHandler(interval=1.0)  # Slower but clearer
 ### With Metasploit/exploitation framework
 
 ```python
-# Exfiltrate data from compromised system
+# Transfer data from compromised system
 import sys
 sys.path.insert(0, '/path/to/qrl')
 
