@@ -1,10 +1,11 @@
 """Server GUI tests.
 
-Each test creates a real tkinter root and exercises the GUI class. Tests are
-skipped if the platform can't open a display (e.g. headless CI without Xvfb).
+Tk on Windows doesn't tolerate creating/destroying multiple `tk.Tk()` roots
+within the same process — the second creation hits a "tcl_findLibrary"
+error. We work around that by sharing a single GUI instance across tests
+(setUpClass) and resetting relevant state in setUp.
 """
 
-import os
 import tempfile
 import tkinter as tk
 import unittest
@@ -21,21 +22,38 @@ def _can_open_display() -> bool:
     return True
 
 
-@unittest.skipUnless(_can_open_display(), "no display available for tk.Tk()")
+_DISPLAY_OK = _can_open_display()
+
+
+@unittest.skipUnless(_DISPLAY_OK, "no display available for tk.Tk()")
 class TestServerGUI(unittest.TestCase):
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls):
         from qrl_server.gui import QRLServerGUI
 
-        self.gui = QRLServerGUI()
-        # Hide the window during tests
-        self.gui.root.withdraw()
+        cls.gui = QRLServerGUI()
+        cls.gui.root.withdraw()
 
-    def tearDown(self):
+    @classmethod
+    def tearDownClass(cls):
         try:
-            self.gui.root.destroy()
+            cls.gui.root.destroy()
         except tk.TclError:
             pass
 
+    def setUp(self):
+        # Reset transient state before every test
+        self.gui.is_encoding = False
+        self.gui.is_displaying = False
+        self.gui.encoder = None
+        self.gui.parallel_encoder = None
+        self.gui.qr_images = []
+        self.gui.current_file = None
+        self.gui.progress_var.set(0)
+
+    # ------------------------------------------------------------------
+    # Initial state / config plumbing
+    # ------------------------------------------------------------------
     def test_initial_state(self):
         self.assertFalse(self.gui.is_encoding)
         self.assertFalse(self.gui.is_displaying)
@@ -43,7 +61,7 @@ class TestServerGUI(unittest.TestCase):
         self.assertEqual(self.gui.qr_images, [])
 
     def test_default_config_loaded(self):
-        # Defaults from ServerConfig - chunk_size 1490 (Q-level optimal) and 0.1s
+        # Defaults from ServerConfig: 1490 raw bytes per chunk, 0.1s display
         self.assertEqual(self.gui.config.chunk_size, 1490)
         self.assertAlmostEqual(self.gui.config.duration, 0.1)
         self.assertEqual(self.gui.config.error_correction, "Q")
@@ -72,8 +90,10 @@ class TestServerGUI(unittest.TestCase):
         self.gui._set_duration_with_warning(0.05)
         self.assertAlmostEqual(self.gui.duration_var.get(), 0.05)
 
+    # ------------------------------------------------------------------
+    # Metadata-handling / completion
+    # ------------------------------------------------------------------
     def test_encoding_complete_handler_with_traditional_metadata(self):
-        # Mimic what _encoding_complete needs from metadata
         metadata = {
             "total_size": 1000,
             "total_chunks": 5,
@@ -84,7 +104,6 @@ class TestServerGUI(unittest.TestCase):
         self.assertEqual(int(self.gui.progress_var.get()), 100)
 
     def test_encoding_complete_handler_with_parallel_metadata(self):
-        # Parallel encoder must provide the same keys; GUI shouldn't crash.
         metadata = {
             "total_size": 2000,
             "total_chunks": 3,
@@ -101,39 +120,25 @@ class TestServerGUI(unittest.TestCase):
             self.gui._encode_file()
         mock_err.assert_called()
 
-
-@unittest.skipUnless(_can_open_display(), "no display available for tk.Tk()")
-class TestServerGUIEncodingFlow(unittest.TestCase):
-    """Drive the actual encode pipeline through the GUI worker (synchronous)."""
-
-    def setUp(self):
-        from qrl_server.gui import QRLServerGUI
-
-        self.gui = QRLServerGUI()
-        self.gui.root.withdraw()
-
-        self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
-        self.tmp.write(b"GUI encoding test payload " * 50)
-        self.tmp.close()
-
-    def tearDown(self):
-        try:
-            self.gui.root.destroy()
-        except tk.TclError:
-            pass
-        Path(self.tmp.name).unlink(missing_ok=True)
-
+    # ------------------------------------------------------------------
+    # End-to-end through the encoding worker (synchronous)
+    # ------------------------------------------------------------------
     def test_worker_prepares_chunks_and_caches_images(self):
-        self.gui.current_file = self.tmp.name
-        self.gui.file_path_var.set(self.tmp.name)
-        # Run worker synchronously (the real flow runs it on a Thread)
-        self.gui._encode_file_worker()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
+        tmp.write(b"GUI encoding test payload " * 50)
+        tmp.close()
+        try:
+            self.gui.current_file = tmp.name
+            self.gui.file_path_var.set(tmp.name)
+            self.gui._encode_file_worker()
 
-        self.assertIsNotNone(self.gui.encoder)
-        self.assertGreater(self.gui.encoder.get_total_chunks(), 0)
-        self.assertEqual(self.gui.total_chunks, self.gui.encoder.get_total_chunks())
-        # Prefetch is enabled by default for small files
-        self.assertIsNotNone(self.gui.encoder.get_qr_images())
+            self.assertIsNotNone(self.gui.encoder)
+            self.assertGreater(self.gui.encoder.get_total_chunks(), 0)
+            self.assertEqual(self.gui.total_chunks, self.gui.encoder.get_total_chunks())
+            # Prefetch is enabled by default for small files
+            self.assertIsNotNone(self.gui.encoder.get_qr_images())
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

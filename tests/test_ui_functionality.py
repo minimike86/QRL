@@ -140,7 +140,8 @@ class TestConfigurationSystem(unittest.TestCase):
         # Load and verify
         loaded_config = ConfigManager.load_config(str(test_config_path))
         self.assertIsInstance(loaded_config, ServerConfig)
-        self.assertEqual(loaded_config.chunk_size, 1024)  # Default value
+        # Default chunk size matches ServerConfig() default (Q-level optimal)
+        self.assertEqual(loaded_config.chunk_size, ServerConfig().chunk_size)
 
     def test_config_override_validation(self):
         """Test that config overrides work and validate."""

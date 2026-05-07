@@ -1,4 +1,4 @@
-"""Client GUI tests. Skipped when no display is available."""
+"""Client GUI tests. Shares one Tk root across tests (Windows can't recreate)."""
 
 import tkinter as tk
 import unittest
@@ -14,19 +14,30 @@ def _can_open_display() -> bool:
     return True
 
 
-@unittest.skipUnless(_can_open_display(), "no display available for tk.Tk()")
+_DISPLAY_OK = _can_open_display()
+
+
+@unittest.skipUnless(_DISPLAY_OK, "no display available for tk.Tk()")
 class TestClientGUI(unittest.TestCase):
-    def setUp(self):
+    @classmethod
+    def setUpClass(cls):
         from qrl_client.gui import QRLClientGUI
 
-        self.gui = QRLClientGUI()
-        self.gui.root.withdraw()
+        cls.gui = QRLClientGUI()
+        cls.gui.root.withdraw()
 
-    def tearDown(self):
+    @classmethod
+    def tearDownClass(cls):
         try:
-            self.gui.root.destroy()
+            cls.gui.root.destroy()
         except tk.TclError:
             pass
+
+    def setUp(self):
+        self.gui.is_capturing = False
+        self.gui.decoder = None
+        self.gui.capture_handler = None
+        self.gui.output_file = None
 
     def test_initial_state(self):
         self.assertFalse(self.gui.is_capturing)
@@ -62,14 +73,6 @@ class TestClientGUI(unittest.TestCase):
         with patch("tkinter.messagebox.showerror") as mock_err:
             self.gui._start_capture()
         mock_err.assert_called()
-
-    def test_toggle_region(self):
-        self.gui.region_enabled_var.set(True)
-        self.gui._toggle_region()
-        # First entry inside region_entry_frame should now be enabled
-        for w in self.gui.region_entry_frame.winfo_children():
-            if isinstance(w, tk.ttk.Entry) if hasattr(tk, "ttk") else False:
-                pass  # ttk import path differs; not asserting widget state strictly
 
 
 if __name__ == "__main__":
