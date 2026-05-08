@@ -15,6 +15,69 @@ function unpackChunk(bytes) {
   };
 }
 
+// ── Fountain decoding ────────────────────────────────────────────────────────
+function seededRandom(seed) {
+  let s = seed >>> 0;
+  return () => { s = (Math.imul(1664525, s) + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+function chooseDegree(rng, N) {
+  if (N === 1) return 1;
+  const r = rng();
+  if (r < 0.50) return 1;
+  if (r < 0.75) return Math.min(2, N);
+  if (r < 0.90) return Math.min(3, N);
+  return Math.min(N, 3 + Math.ceil(rng() * Math.min(N - 3, 5)));
+}
+
+function chooseIndices(rng, N, degree) {
+  const idxs = new Set();
+  while (idxs.size < Math.min(degree, N)) idxs.add(Math.floor(rng() * N));
+  return [...idxs].sort((a, b) => a - b);
+}
+
+function xorInPlace(dst, src) {
+  const len = Math.min(dst.length, src.length);
+  for (let i = 0; i < len; i++) dst[i] ^= src[i];
+}
+
+function addFountainPacket(allIndices, xorPayload) {
+  const payload = xorPayload.slice();
+  const pending = [];
+  for (const idx of allIndices) {
+    const r = sourceRecovered.get(idx);
+    if (r !== undefined) xorInPlace(payload, r);
+    else pending.push(idx);
+  }
+  if (!pending.length) return;
+  if (pending.length === 1) { recoverSourceChunk(pending[0], payload); return; }
+  fountainPackets.push({ indices: pending, payload });
+}
+
+function recoverSourceChunk(startIdx, startPayload) {
+  const queue = [{ idx: startIdx, payload: startPayload }];
+  while (queue.length) {
+    const { idx, payload } = queue.shift();
+    if (sourceRecovered.has(idx)) continue;
+    sourceRecovered.set(idx, payload);
+    newCount++;
+    document.getElementById('sNew').textContent = newCount;
+    updateProgress();
+
+    const remaining = [];
+    for (const pkt of fountainPackets) {
+      const i = pkt.indices.indexOf(idx);
+      if (i === -1) { remaining.push(pkt); continue; }
+      xorInPlace(pkt.payload, payload);
+      pkt.indices.splice(i, 1);
+      if (pkt.indices.length === 1) queue.push({ idx: pkt.indices[0], payload: pkt.payload });
+      else if (pkt.indices.length > 1) remaining.push(pkt);
+    }
+    fountainPackets = remaining;
+  }
+  if (expectedTotal > 0 && sourceRecovered.size === expectedTotal) finalise();
+}
+
 // ── Decoder state ────────────────────────────────────────────────────────────
 let manifest = null;
 let received = new Map();   // sequence → Uint8Array payload
@@ -28,6 +91,11 @@ let hitCount = 0;
 let newCount = 0;
 let dupCount = 0;
 let receiveStartTime = null;
+
+// Fountain decoding state
+let fountainPackets = [];
+let sourceRecovered = new Map();
+let seenSeeds = new Set();
 
 // Camera
 let mediaStream = null;
@@ -168,11 +236,34 @@ function processChunk(bytes) {
     return;
   }
 
-  if (chunk.streamId !== 0) return;  // only single-stream supported
-
-  // Require manifest before accepting data chunks
   if (!manifest) return;
 
+  // ── Fountain packet (stream 2) ────────────────────────────────────────────
+  if (chunk.streamId === 2) {
+    if (complete) return;
+    const seed = chunk.sequence;
+    if (seenSeeds.has(seed)) {
+      dupCount++;
+      document.getElementById('sDups').textContent = dupCount;
+      return;
+    }
+    seenSeeds.add(seed);
+    if (sourceRecovered.size === 0) {
+      setStatus('Receiving fountain packets…', 'warn');
+      document.getElementById('scanTxt').textContent = 'receiving…';
+    }
+    if (!receiveStartTime) receiveStartTime = Date.now();
+    const N = chunk.totalChunks;
+    const rng = seededRandom(seed);
+    const degree = chooseDegree(rng, N);
+    const indices = chooseIndices(rng, N, degree);
+    addFountainPacket(indices, chunk.payload.slice());
+    return;
+  }
+
+  if (chunk.streamId !== 0) return;
+
+  // ── Sequential packet (stream 0) ─────────────────────────────────────────
   if (received.size === 0) {
     setStatus('Receiving chunks…', 'warn');
     document.getElementById('scanTxt').textContent = 'receiving…';
@@ -203,15 +294,30 @@ function finalise() {
   if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
   document.getElementById('video').srcObject = null;
 
-  // Sort sequences 0…N-1 and concatenate payloads
-  const totalBytes = Array.from(received.values()).reduce((s, b) => s + b.length, 0);
-  const combined = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (let i = 0; i < expectedTotal; i++) {
-    const part = received.get(i);
-    if (!part) { setStatus(`Missing chunk ${i} — transfer incomplete.`, 'err'); return; }
-    combined.set(part, offset);
-    offset += part.length;
+  let combined;
+  if (manifest?.fountain) {
+    // Reassemble from padded recovered source chunks — trim to actual data size
+    const totalBytes = manifest.size;
+    combined = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (let i = 0; i < expectedTotal; i++) {
+      const part = sourceRecovered.get(i);
+      if (!part) { setStatus(`Source chunk ${i} not recovered.`, 'err'); return; }
+      const actualSize = Math.min(manifest.chunk_size, totalBytes - offset);
+      combined.set(part.subarray(0, actualSize), offset);
+      offset += actualSize;
+    }
+  } else {
+    // Sequential: concatenate variable-length payloads
+    const totalBytes = Array.from(received.values()).reduce((s, b) => s + b.length, 0);
+    combined = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (let i = 0; i < expectedTotal; i++) {
+      const part = received.get(i);
+      if (!part) { setStatus(`Missing chunk ${i} — transfer incomplete.`, 'err'); return; }
+      combined.set(part, offset);
+      offset += part.length;
+    }
   }
 
   let data = combined;
@@ -263,12 +369,22 @@ function showManifest(m) {
   setStatus('Manifest received — waiting for sender to resume.', 'warn');
 }
 
+function chunkReceived(i) {
+  return manifest?.fountain ? sourceRecovered.has(i) : received.has(i);
+}
+
+function recoveredCount() {
+  return manifest?.fountain ? sourceRecovered.size : received.size;
+}
+
 function calcRxEta() {
-  if (!receiveStartTime || received.size === 0 || !expectedTotal) return '—';
+  if (!receiveStartTime || !expectedTotal) return '—';
+  const n = recoveredCount();
+  if (n === 0) return '—';
   const elapsed = (Date.now() - receiveStartTime) / 1000;
   if (elapsed < 1) return '—';
-  const rate = received.size / elapsed;
-  const remaining = expectedTotal - received.size;
+  const rate = n / elapsed;
+  const remaining = expectedTotal - n;
   if (remaining <= 0) return '0s';
   const secs = Math.round(remaining / rate);
   if (secs < 60) return secs + 's';
@@ -276,7 +392,7 @@ function calcRxEta() {
 }
 
 function updateProgress() {
-  const n = received.size;
+  const n = recoveredCount();
   const tot = expectedTotal || '?';
   const pct = expectedTotal ? Math.floor((n / expectedTotal) * 100) : 0;
   document.getElementById('pReceived').textContent = n;
@@ -303,7 +419,7 @@ function updateChunkMap() {
     const start = i * cellSize;
     const end = Math.min(start + cellSize, expectedTotal);
     let recvd = 0;
-    for (let j = start; j < end; j++) { if (received.has(j)) recvd++; }
+    for (let j = start; j < end; j++) { if (chunkReceived(j)) recvd++; }
     const cell = document.createElement('div');
     const full = recvd === end - start;
     cell.className = 'chunk-cell' + (full ? ' ok' : recvd > 0 ? ' partial' : '');
@@ -311,7 +427,7 @@ function updateChunkMap() {
   }
 
   const missing = [];
-  for (let i = 0; i < expectedTotal; i++) { if (!received.has(i)) missing.push(i + 1); }
+  for (let i = 0; i < expectedTotal; i++) { if (!chunkReceived(i)) missing.push(i + 1); }
   const listEl = document.getElementById('missingList');
   if (missing.length === 0) {
     listEl.textContent = '';
@@ -324,7 +440,7 @@ function updateChunkMap() {
 
 function copyMissing() {
   const missing = [];
-  for (let i = 0; i < expectedTotal; i++) { if (!received.has(i)) missing.push(i + 1); }
+  for (let i = 0; i < expectedTotal; i++) { if (!chunkReceived(i)) missing.push(i + 1); }
   if (!missing.length) { setStatus('No missing chunks!', 'ok'); return; }
   navigator.clipboard.writeText(missing.join(','))
     .then(() => setStatus(`Copied ${missing.length} missing chunk number(s) to clipboard.`, 'ok'))
@@ -346,6 +462,9 @@ function resetState() {
   assembledData = null;
   frameCount = hitCount = newCount = dupCount = 0;
   receiveStartTime = null;
+  fountainPackets = [];
+  sourceRecovered = new Map();
+  seenSeeds = new Set();
   ['sScans','sHits','sNew','sDups'].forEach(id => document.getElementById(id).textContent = '0');
   document.getElementById('manifestCard').classList.add('hidden');
   document.getElementById('downloadBtn').classList.add('hidden');

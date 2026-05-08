@@ -34,6 +34,39 @@ function toByteString(u8) {
   return s;
 }
 
+// ── Fountain coding ──────────────────────────────────────────────────────────
+function seededRandom(seed) {
+  let s = seed >>> 0;
+  return () => { s = (Math.imul(1664525, s) + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+function chooseDegree(rng, N) {
+  if (N === 1) return 1;
+  const r = rng();
+  if (r < 0.50) return 1;
+  if (r < 0.75) return Math.min(2, N);
+  if (r < 0.90) return Math.min(3, N);
+  return Math.min(N, 3 + Math.ceil(rng() * Math.min(N - 3, 5)));
+}
+
+function chooseIndices(rng, N, degree) {
+  const idxs = new Set();
+  while (idxs.size < Math.min(degree, N)) idxs.add(Math.floor(rng() * N));
+  return [...idxs].sort((a, b) => a - b);
+}
+
+function buildFountainPacket(seed, chunks) {
+  const N = chunks.length;
+  const rng = seededRandom(seed);
+  const idxs = chooseIndices(rng, N, chooseDegree(rng, N));
+  const size = chunks[0].length;
+  const payload = new Uint8Array(size);
+  for (const i of idxs) { const src = chunks[i]; for (let j = 0; j < size; j++) payload[j] ^= src[j]; }
+  const hdr = packHeader(2, seed, N);
+  const out = new Uint8Array(HEADER_SIZE + size); out.set(hdr); out.set(payload, HEADER_SIZE);
+  return out;
+}
+
 // ── State ────────────────────────────────────────────────────────────────────
 let framedChunks = [];   // Uint8Array[] – each has 9-byte header prepended
 let manifestBytes = null;
@@ -51,6 +84,9 @@ let repeatCount = 0;    // ticks remaining on current frame before advancing
 let lastRawData = null;
 let lastFilename = null;
 let lastIsDirectory = false;
+let isFountain = false;
+let fountainSeed = 0;
+let paddedChunks = [];
 
 // ── File reading ─────────────────────────────────────────────────────────────
 document.getElementById('fileInput').addEventListener('change', async e => {
@@ -126,11 +162,19 @@ async function prepare(raw, filename, isDirectory) {
   // Frame each chunk with 9-byte header
   framedChunks = rawChunks.map((c, i) => concat2(packHeader(0, i, total), c));
 
+  // Padded source chunks for fountain mode (all same length)
+  paddedChunks = rawChunks.map(c => {
+    if (c.length === chunkSize) return c;
+    const p = new Uint8Array(chunkSize); p.set(c); return p;
+  });
+  isFountain = document.getElementById('fountainToggle').checked;
+
   // Build manifest
   const manifest = {
     v: 1, filename, size: data.length, original_size: origSize,
     compressed, is_directory: isDirectory,
     num_streams: 1, total_chunks: total, chunk_size: chunkSize, error_correction: ec,
+    fountain: isFountain,
   };
   manifestBytes = buildManifestChunk(manifest);
 
@@ -146,6 +190,7 @@ async function prepare(raw, filename, isDirectory) {
   document.getElementById('actionRow').classList.remove('hidden');
   document.getElementById('replaySection').classList.remove('hidden');
   document.getElementById('startBtn').textContent = 'Start Transfer';
+  document.getElementById('replaySection').classList.toggle('hidden', isFountain);
   setStatus('Ready — press Start Transfer.');
 }
 
@@ -160,6 +205,7 @@ async function startTransfer() {
   frameCount = 0;
   fpsAvg = 0;
   repeatCount = 0;
+  fountainSeed = 0;
   lastFrameTs = performance.now();
 
   document.getElementById('startBtn').classList.add('hidden');
@@ -192,18 +238,26 @@ async function renderFrame() {
   const size = Math.max(100, parseInt(document.getElementById('qrSize').value) || 420);
   const ec = document.getElementById('ecLevel').value;
 
-  let isManifest = false, data, frameSeq, frameLabel;
+  let isManifest = false, data, frameSeq = null, frameLabel;
   if (replayChunks !== null) {
     frameSeq = replayChunks[replayPos];
     data = framedChunks[frameSeq];
     frameLabel = `${frameSeq + 1} / ${framedChunks.length}`;
     replayPos++;
     if (replayPos >= replayChunks.length) { replayPos = 0; replayCycles++; }
+  } else if (currentIdx === 0) {
+    isManifest = true;
+    data = manifestBytes;
+    frameLabel = 'MANIFEST';
+  } else if (isFountain) {
+    data = buildFountainPacket(fountainSeed, paddedChunks);
+    frameSeq = fountainSeed;
+    frameLabel = `pkt ${fountainSeed + 1}`;
+    fountainSeed++;
   } else {
-    isManifest = (currentIdx === 0);
-    data = isManifest ? manifestBytes : framedChunks[currentIdx - 1];
-    frameSeq = isManifest ? null : currentIdx - 1;
-    frameLabel = isManifest ? 'MANIFEST' : `${currentIdx} / ${framedChunks.length}`;
+    frameSeq = currentIdx - 1;
+    data = framedChunks[frameSeq];
+    frameLabel = `${currentIdx} / ${framedChunks.length}`;
   }
 
   try {
@@ -219,6 +273,11 @@ async function renderFrame() {
     return;
   }
 
+  // Flash indicator — pulse after QR is drawn
+  canvas.classList.remove('qr-new');
+  void canvas.offsetWidth;
+  canvas.classList.add('qr-new');
+
   const now = performance.now();
   const elapsed = now - lastFrameTs;
   lastFrameTs = now;
@@ -227,20 +286,26 @@ async function renderFrame() {
 
   document.getElementById('chunkLabel').innerHTML =
     isManifest ? '<span>MANIFEST</span>' : `chunk <span>${frameLabel}</span>`;
-  document.getElementById('sFrame').textContent = isManifest ? 'M' : (replayChunks !== null ? frameSeq + 1 : currentIdx);
-  document.getElementById('sCycles').textContent = replayChunks !== null ? replayCycles : cycleCount;
+  document.getElementById('sFrame').textContent = isManifest ? 'M' : (frameSeq !== null ? frameSeq + 1 : '—');
+  document.getElementById('sCycles').textContent = replayChunks !== null ? replayCycles : (isFountain ? '—' : cycleCount);
   document.getElementById('sFps').textContent = frameCount < 3 ? '…' : fpsAvg;
   const pct = isManifest ? 0 : replayChunks !== null
     ? Math.round((replayPos / replayChunks.length) * 100)
-    : Math.round((currentIdx / framedChunks.length) * 100);
+    : isFountain
+      ? Math.round(((fountainSeed % framedChunks.length) / framedChunks.length) * 100)
+      : Math.round((currentIdx / framedChunks.length) * 100);
   document.getElementById('progFill').style.width = pct + '%';
 
   if (replayChunks === null) {
-    currentIdx++;
-    if (currentIdx > framedChunks.length) {
-      currentIdx = 0;
-      cycleCount++;
-      document.getElementById('sCycles').textContent = cycleCount;
+    if (isManifest) {
+      currentIdx++; // advance from manifest phase into data phase
+    } else if (!isFountain) {
+      currentIdx++;
+      if (currentIdx > framedChunks.length) {
+        currentIdx = 0;
+        cycleCount++;
+        document.getElementById('sCycles').textContent = cycleCount;
+      }
     }
   }
 }
@@ -345,11 +410,12 @@ document.getElementById('chunkSize').addEventListener('input', () => {
   reprepareTimer = setTimeout(reprepare, 600);
 });
 document.getElementById('ecLevel').addEventListener('change', reprepare);
-document.getElementById('fps').addEventListener('input', () => {
+function refreshEta() {
   const el = document.getElementById('etaVal');
   if (el) el.textContent = calcEta(framedChunks.length);
+}
+['input', 'change'].forEach(ev => {
+  document.getElementById('fps').addEventListener(ev, refreshEta);
+  document.getElementById('chunkRepeat').addEventListener(ev, refreshEta);
 });
-document.getElementById('chunkRepeat').addEventListener('input', () => {
-  const el = document.getElementById('etaVal');
-  if (el) el.textContent = calcEta(framedChunks.length);
-});
+document.getElementById('fountainToggle').addEventListener('change', reprepare);
