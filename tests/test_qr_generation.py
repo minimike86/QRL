@@ -7,11 +7,11 @@ from qrl_server.qr_generator import QRGenerator
 
 class TestCapacityHelpers(unittest.TestCase):
     def test_max_chunk_size_known_levels(self):
-        # Capacities reflect base32-stripped payload in QR alphanumeric mode at v40.
-        self.assertEqual(QRGenerator.get_max_chunk_size("L"), 2680)
-        self.assertEqual(QRGenerator.get_max_chunk_size("M"), 2110)
-        self.assertEqual(QRGenerator.get_max_chunk_size("Q"), 1505)
-        self.assertEqual(QRGenerator.get_max_chunk_size("H"), 1150)
+        # Binary mode (byte mode) capacities at version 40, per ISO/IEC 18004.
+        self.assertEqual(QRGenerator.get_max_chunk_size("L"), 2953)
+        self.assertEqual(QRGenerator.get_max_chunk_size("M"), 2331)
+        self.assertEqual(QRGenerator.get_max_chunk_size("Q"), 1663)
+        self.assertEqual(QRGenerator.get_max_chunk_size("H"), 1273)
 
     def test_max_chunk_size_unknown_level_falls_back(self):
         self.assertEqual(QRGenerator.get_max_chunk_size("Z"), 900)
@@ -23,10 +23,10 @@ class TestCapacityHelpers(unittest.TestCase):
 
     def test_validate_chunk_size_within_limit(self):
         self.assertTrue(QRGenerator.validate_chunk_size(500, "Q"))
-        self.assertTrue(QRGenerator.validate_chunk_size(1505, "Q"))
+        self.assertTrue(QRGenerator.validate_chunk_size(1663, "Q"))
 
     def test_validate_chunk_size_exceeds_limit(self):
-        self.assertFalse(QRGenerator.validate_chunk_size(1506, "Q"))
+        self.assertFalse(QRGenerator.validate_chunk_size(1664, "Q"))
         self.assertFalse(QRGenerator.validate_chunk_size(5000, "H"))
 
 

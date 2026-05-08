@@ -135,3 +135,11 @@ output_files/
 captured_frames/
 temp/
 *.qr
+
+# Tempqrl test dirs
+Tempqrl_auto_test/
+Tempqrl_boxsize_test/
+Tempqrl_test_folder/
+Tempqrl_test_grid/
+Tempqrl_test_out/
+Tempqrl_test_single/

@@ -4,20 +4,7 @@ QRL QR Code Generator
 Low-level QR code generation utilities.
 """
 
-import base64
 from typing import Optional
-
-
-def _b32_encode_stripped(data: bytes) -> str:
-    """base32-encode without '=' padding so the result is pure QR-alphanumeric
-    (uppercase A-Z + digits 2-7 + nothing else). Letting qrcode pack the QR in
-    alphanumeric mode roughly doubles per-QR throughput vs byte mode."""
-    return base64.b32encode(data).decode("ascii").rstrip("=")
-
-
-def _b32_decode_stripped(text: str) -> bytes:
-    pad = (-len(text)) % 8
-    return base64.b32decode(text + ("=" * pad))
 
 import qrcode
 from PIL import Image
@@ -39,9 +26,14 @@ def _pool_worker_generate(args) -> Image.Image:
 
 
 class QRGenerator:
-    """Generates QR codes from binary data."""
+    """Generates QR codes from binary data using byte (binary) mode."""
 
-    # Error correction level mapping
+    # Maps EC letter to the qrcode library's integer constant.
+    # NOTE: qrcode's constants are NOT in alphabetical order:
+    #   ERROR_CORRECT_L = 1, ERROR_CORRECT_M = 0,
+    #   ERROR_CORRECT_Q = 3, ERROR_CORRECT_H = 2
+    # BIT_LIMIT_TABLE is indexed by these integer values, so always use
+    # ERROR_LEVELS[ec] rather than a hand-written {L:0, M:1, Q:2, H:3} dict.
     ERROR_LEVELS = {
         'L': ERROR_CORRECT_L,
         'M': ERROR_CORRECT_M,
@@ -49,15 +41,15 @@ class QRGenerator:
         'H': ERROR_CORRECT_H,
     }
 
-    # Maximum *raw payload* bytes per QR at version 40 after base32-stripped
-    # encoding (5 raw bytes -> 8 alphanumeric chars) packed in QR alphanumeric
-    # mode. Capacity = floor(alpha_chars_at_v40 * 5 / 8), rounded down with
-    # a few bytes of safety margin for QR mode/length headers.
+    # Total QR capacity in bytes (byte/binary mode, version 40).
+    # Source: ISO/IEC 18004, version 40 binary-mode data capacity.
+    # Formula: (BIT_LIMIT_TABLE[ERROR_LEVELS[ec]][40] - 4 - 16) // 8
+    #   where 4 = mode indicator bits, 16 = char-count bits for v10+.
     MAX_CAPACITY_BYTES = {
-        'L': 2680,  # v40 L alpha cap 4296 -> 2685 raw bytes
-        'M': 2110,  # v40 M alpha cap 3391 -> 2119
-        'Q': 1505,  # v40 Q alpha cap 2420 -> 1512
-        'H': 1150,  # v40 H alpha cap 1852 -> 1157
+        'L': 2953,
+        'M': 2331,
+        'Q': 1663,
+        'H': 1273,
     }
 
     # Generous quiet zone (white border in modules). The QR spec requires 4
@@ -92,43 +84,23 @@ class QRGenerator:
 
     @classmethod
     def get_max_chunk_size(cls, error_correction: str) -> int:
-        """
-        Get maximum chunk size in bytes for given error correction level.
-
-        Args:
-            error_correction: Error correction level (L/M/Q/H)
-
-        Returns:
-            Maximum chunk size in bytes
-        """
+        """Total QR capacity in bytes for the given EC level at version 40."""
         return cls.MAX_CAPACITY_BYTES.get(error_correction, 900)
 
     @classmethod
     def validate_chunk_size(cls, chunk_size: int, error_correction: str) -> bool:
-        """
-        Validate if chunk size fits in QR code capacity.
-
-        Args:
-            chunk_size: Size of data chunk in bytes
-            error_correction: Error correction level (L/M/Q/H)
-
-        Returns:
-            True if chunk size is valid, False otherwise
-        """
-        max_size = cls.get_max_chunk_size(error_correction)
-        return chunk_size <= max_size
+        """True if chunk_size bytes fit in a version-40 QR at this EC level."""
+        return chunk_size <= cls.get_max_chunk_size(error_correction)
 
     def generate(self) -> Image.Image:
-        """Generate a QR code as a PIL Image. Binary payload is base32-stripped
-        first so it survives zbar's text-mode decoding while still fitting
-        into the QR's efficient alphanumeric mode."""
+        """Generate a QR code as a PIL Image using byte (binary) mode."""
         qr = qrcode.QRCode(
             version=self.version,
             error_correction=self.ERROR_LEVELS[self.error_correction],
             box_size=self.box_size,
             border=self.border,
         )
-        qr.add_data(_b32_encode_stripped(self.data))
+        qr.add_data(self.data)
         qr.make(fit=True)
 
         wrapper = qr.make_image(fill_color="black", back_color="white")
@@ -143,11 +115,30 @@ class QRGenerator:
         """Get the actual QR version used (after auto-sizing)."""
         qr = qrcode.QRCode(
             version=self.version,
-            error_correction=self.ERROR_LEVELS[self.error_correction]
+            error_correction=self.ERROR_LEVELS[self.error_correction],
         )
         qr.add_data(self.data)
         qr.make(fit=True)
         return qr.version
+
+    @classmethod
+    def get_version_chunk_capacity(cls, version: int, error_correction: str) -> int:
+        """Total bytes a QR of the given version + EC can hold in binary mode.
+
+        Uses the correct qrcode library index (via ERROR_LEVELS) rather than
+        an alphabetical mapping which would silently swap Q↔H capacities.
+        """
+        from qrcode.util import BIT_LIMIT_TABLE
+        if not 1 <= version <= 40:
+            return 0
+        level_idx = cls.ERROR_LEVELS.get(error_correction)
+        if level_idx is None:
+            return 0
+        total_bits = BIT_LIMIT_TABLE[level_idx][version]
+        # Binary (byte) mode: 4-bit mode indicator + 8-bit char count (v1-9)
+        # or 16-bit char count (v10-40), per ISO/IEC 18004.
+        char_count_bits = 8 if version <= 9 else 16
+        return max(0, (total_bits - 4 - char_count_bits) // 8)
 
     @classmethod
     def get_capacity(cls, version: int, error_correction: str = "L") -> int:
@@ -156,12 +147,4 @@ class QRGenerator:
             raise ValueError(f"version must be 1-40, got {version}")
         if error_correction not in cls.ERROR_LEVELS:
             raise ValueError(f"Invalid error correction level: {error_correction}")
-        from qrcode.util import BIT_LIMIT_TABLE
-
-        level_idx = {"L": 0, "M": 1, "Q": 2, "H": 3}[error_correction]
-        total_bits = BIT_LIMIT_TABLE[level_idx][version]
-        # Binary (byte) mode overhead: 4-bit mode indicator + char-count bits
-        # (8 for v1-9, 16 for v10-40), per ISO/IEC 18004.
-        char_count_bits = 16 if version >= 10 else 8
-        available_bits = total_bits - 4 - char_count_bits
-        return max(available_bits // 8, 0)
+        return cls.get_version_chunk_capacity(version, error_correction)

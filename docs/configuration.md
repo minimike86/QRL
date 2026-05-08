@@ -55,7 +55,9 @@ repeat: true                # loop the QR sequence until manually stopped
 # ── QR rendering ──────────────────────────────────────────────────────────────
 qr_box_size: 10             # pixels per QR module  (10 = standard, 16 = high, 24 = extra)
 qr_border: 6                # quiet-zone width in modules
-qr_grid_size: 1             # number of parallel streams to display simultaneously
+qr_grid_cols: 1             # display grid width  (cols × rows = parallel streams)
+qr_grid_rows: 1             # display grid height (1×1 = single QR, 2×4 = 8 streams, etc.)
+qr_grid_auto: false         # ignore cols/rows and fit as many cells as the screen allows
 
 # ── Limits ────────────────────────────────────────────────────────────────────
 max_file_size: 104857600    # 100 MB hard cap; raise for larger files

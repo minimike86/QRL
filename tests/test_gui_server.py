@@ -44,9 +44,8 @@ class TestServerGUI(unittest.TestCase):
         self.assertIsNone(self.gui.encoder)
 
     def test_default_config_loaded(self):
-        # Default is now "Robust" (H-level): better tolerance for
-        # screen-capture compression artefacts and partial occlusion.
-        self.assertEqual(self.gui.config.chunk_size, 1140)
+        # Default is "Robust" (H-level). chunk_size = H binary-mode v40 cap (1273) - 9 (header).
+        self.assertEqual(self.gui.config.chunk_size, 1264)
         self.assertAlmostEqual(self.gui.config.duration, 0.1)
         self.assertEqual(self.gui.config.error_correction, "H")
 
@@ -56,21 +55,29 @@ class TestServerGUI(unittest.TestCase):
         self.gui._set_speed_preset(0.1)
         self.assertAlmostEqual(self.gui.config.duration, 0.1)
 
-    def test_quality_preset_updates_config(self):
-        self.gui._set_quality_preset("L", 2670)
+    def test_ec_level_updates_config(self):
+        self.gui._set_ec_level("L")
         self.assertEqual(self.gui.config.error_correction, "L")
-        self.assertEqual(self.gui.config.chunk_size, 2670)
-        self.gui._set_quality_preset("H", 1140)
+        self.gui._set_ec_level("H")
         self.assertEqual(self.gui.config.error_correction, "H")
-        self.assertEqual(self.gui.config.chunk_size, 1140)
 
-    def test_mode_preset_toggles_parallel(self):
-        self.gui._set_mode_preset(1)
+    def test_grid_picker_toggles_parallel(self):
+        self.gui._apply_grid(1, 1, auto=False)
         self.assertFalse(self.gui.use_parallel_encoding)
-        self.gui._set_mode_preset(4)
+        self.gui._apply_grid(2, 2, auto=False)
         self.assertTrue(self.gui.use_parallel_encoding)
         self.assertEqual(self.gui._mode_streams, 4)
-        self.assertEqual(self.gui.config.qr_grid_size, 2)
+        self.assertEqual(self.gui.config.qr_grid_cols, 2)
+        self.assertEqual(self.gui.config.qr_grid_rows, 2)
+        self.assertFalse(self.gui.config.qr_grid_auto)
+
+    def test_grid_picker_non_square(self):
+        self.gui._apply_grid(2, 4, auto=False)
+        self.assertEqual(self.gui._mode_streams, 8)
+        self.assertEqual(self.gui._grid_cols, 2)
+        self.assertEqual(self.gui._grid_rows, 4)
+        self.assertEqual(self.gui.config.qr_grid_cols, 2)
+        self.assertEqual(self.gui.config.qr_grid_rows, 4)
 
     def test_button_states_idle_no_file(self):
         self.gui._update_button_states()

@@ -47,11 +47,12 @@ SPEED_PRESETS = [
     ("Max (30 fps)", 0.033),
 ]
 
-# Robustness presets — (label, error correction level, suggested chunk size)
-QUALITY_PRESETS = [
-    ("Maximum throughput", "L", 2670),
-    ("Balanced", "Q", 1490),
-    ("Robust", "H", 1140),
+# Error-correction level chips — label + EC letter.
+EC_LEVELS = [
+    ("L", "L"),
+    ("M", "M"),
+    ("Q", "Q"),
+    ("H", "H"),
 ]
 
 # Maximum entries in the lazy QR cache. Each cached QR image is small (mode-1
@@ -110,20 +111,153 @@ class _LRUDict:
 # to lock onto, which helps when capture is at a lower resolution than
 # the QR display.
 DENSITY_PRESETS = [
-    ("Standard (10 px/module)", 10),
-    ("High (16 px/module)", 16),
-    ("Extra (24 px/module)", 24),
+    ("Normal (10 px/module)", 10),
+    ("Sharp (16 px/module)", 16),
+    ("Ultra (24 px/module)", 24),
 ]
 
-# Parallel mode presets — value is either an int num_streams or "auto".
-# "auto" computes a fill-the-screen grid at display time.
-MODE_PRESETS = [
-    ("Single stream", 1),
-    ("2×2 grid (4×)", 4),
-    ("3×3 grid (9×)", 9),
-    ("4×4 grid (16×)", 16),
-    ("Auto-fit screen", "auto"),
-]
+
+class _GridPicker(ttk.Frame):
+    """Excel-style grid size picker.
+
+    Hover to preview cols×rows, click to commit. Below the canvas: a status
+    label and an Auto-fit checkbox that overrides the manual selection by
+    sizing the grid to the screen at display time.
+
+    Calls `on_change(cols, rows, auto)` whenever the user commits a change.
+    """
+
+    CELL = 14       # cell side length in px
+    GAP = 2         # gap between cells in px
+    MAX_COLS = 8
+    MAX_ROWS = 8
+
+    def __init__(self, parent, on_change=None, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._on_change = on_change
+        self._cols = 1
+        self._rows = 1
+        self._auto = False
+
+        canvas_w = self.MAX_COLS * (self.CELL + self.GAP) - self.GAP
+        canvas_h = self.MAX_ROWS * (self.CELL + self.GAP) - self.GAP
+
+        # Top row: canvas + status label side-by-side.
+        top = ttk.Frame(self, style="Card.TFrame")
+        top.pack(fill=tk.X)
+
+        self._canvas = tk.Canvas(
+            top, width=canvas_w, height=canvas_h,
+            bg=BG_ELEVATED, highlightthickness=0, cursor="hand2",
+        )
+        self._canvas.pack(side=tk.LEFT)
+
+        self._cell_ids = {}  # (col, row) -> canvas rect id
+        for r in range(self.MAX_ROWS):
+            for c in range(self.MAX_COLS):
+                x0 = c * (self.CELL + self.GAP)
+                y0 = r * (self.CELL + self.GAP)
+                rid = self._canvas.create_rectangle(
+                    x0, y0, x0 + self.CELL, y0 + self.CELL,
+                    fill=BG_INPUT, outline=BORDER, width=1,
+                )
+                self._cell_ids[(c, r)] = rid
+
+        self._canvas.bind("<Motion>", self._on_motion)
+        self._canvas.bind("<Leave>", self._on_leave)
+        self._canvas.bind("<Button-1>", self._on_click)
+
+        # Status label to the right of the grid.
+        right = ttk.Frame(top, style="Card.TFrame")
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(12, 0))
+
+        self._status_var = tk.StringVar()
+        ttk.Label(
+            right, textvariable=self._status_var, style="Card.TLabel",
+        ).pack(anchor="w", pady=(canvas_h // 2 - 12, 0))
+
+        self._auto_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            right, text="Auto-fit screen", variable=self._auto_var,
+            command=self._on_auto_toggle,
+        ).pack(anchor="w", pady=(6, 0))
+
+        self._refresh()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def set_grid(self, cols: int, rows: int, auto: bool = False) -> None:
+        """Programmatic set — does NOT fire on_change."""
+        self._cols = max(1, min(int(cols), self.MAX_COLS))
+        self._rows = max(1, min(int(rows), self.MAX_ROWS))
+        self._auto = bool(auto)
+        self._auto_var.set(self._auto)
+        self._refresh()
+
+    def get_grid(self) -> tuple:
+        return (self._cols, self._rows, self._auto)
+
+    # ------------------------------------------------------------------
+    # Events
+    # ------------------------------------------------------------------
+    def _on_motion(self, event) -> None:
+        if self._auto:
+            return
+        c, r = self._xy_to_cell(event.x, event.y)
+        self._paint(c + 1, r + 1, hover=True)
+
+    def _on_leave(self, _event) -> None:
+        self._refresh()
+
+    def _on_click(self, event) -> None:
+        if self._auto:
+            return
+        c, r = self._xy_to_cell(event.x, event.y)
+        self._cols, self._rows = c + 1, r + 1
+        self._refresh()
+        if self._on_change:
+            self._on_change(self._cols, self._rows, self._auto)
+
+    def _on_auto_toggle(self) -> None:
+        self._auto = bool(self._auto_var.get())
+        self._refresh()
+        if self._on_change:
+            self._on_change(self._cols, self._rows, self._auto)
+
+    # ------------------------------------------------------------------
+    # Drawing
+    # ------------------------------------------------------------------
+    def _xy_to_cell(self, x: int, y: int) -> tuple:
+        c = x // (self.CELL + self.GAP)
+        r = y // (self.CELL + self.GAP)
+        c = max(0, min(int(c), self.MAX_COLS - 1))
+        r = max(0, min(int(r), self.MAX_ROWS - 1))
+        return c, r
+
+    def _refresh(self) -> None:
+        """Redraw using the committed selection (no hover)."""
+        self._paint(self._cols, self._rows, hover=False)
+
+    def _paint(self, cols: int, rows: int, hover: bool) -> None:
+        for (c, r), rid in self._cell_ids.items():
+            in_sel = c < cols and r < rows
+            if self._auto:
+                # Dim everything when auto is on; nothing is selectable.
+                self._canvas.itemconfig(rid, fill=BG_INPUT, outline=BORDER)
+            elif in_sel:
+                self._canvas.itemconfig(rid, fill=ACCENT, outline=ACCENT)
+            else:
+                self._canvas.itemconfig(rid, fill=BG_INPUT, outline=BORDER)
+        if self._auto:
+            self._status_var.set("Auto-fit (sized at display time)")
+        else:
+            streams = cols * rows
+            prefix = "Hover: " if hover else ""
+            self._status_var.set(
+                f"{prefix}{cols}×{rows} grid · "
+                f"{streams} stream{'s' if streams != 1 else ''}"
+            )
 
 
 def auto_grid_for_screen(screen_w: int, screen_h: int,
@@ -138,6 +272,45 @@ def auto_grid_for_screen(screen_w: int, screen_h: int,
     cols = max(1, (usable_w + spacing) // (qr_target_px + spacing))
     rows = max(1, (usable_h + spacing) // (qr_target_px + spacing))
     return int(cols), int(rows)
+
+
+class _ScrollableFrame(ttk.Frame):
+    """Vertically scrollable container. Pack content into `.inner`.
+
+    Mousewheel scrolling fires when the cursor is within this frame's bounds,
+    so it coexists safely with other scrollable widgets elsewhere in the app.
+    """
+
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        self._canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=BG)
+        self._canvas.grid(row=0, column=0, sticky="nsew")
+
+        self.inner = ttk.Frame(self._canvas)
+        self._win_id = self._canvas.create_window((0, 0), window=self.inner, anchor="nw")
+
+        self.inner.bind("<Configure>", self._on_frame_configure)
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+        self._canvas.bind_all("<MouseWheel>", self._on_mousewheel, add=True)
+
+    def _on_frame_configure(self, _event) -> None:
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event) -> None:
+        self._canvas.itemconfig(self._win_id, width=event.width)
+
+    def _on_mousewheel(self, event) -> None:
+        try:
+            rx = self.winfo_rootx()
+            ry = self.winfo_rooty()
+            if rx <= event.x_root <= rx + self.winfo_width() and \
+               ry <= event.y_root <= ry + self.winfo_height():
+                self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        except Exception:
+            pass
 
 
 class QRLServerGUI:
@@ -190,9 +363,9 @@ class QRLServerGUI:
         self.use_parallel_encoding = False
         self.total_chunks = 0
 
-        # Grid/mode state
-        # _mode_value is one of: int (num_streams), "auto"
-        self._mode_value = 1
+        # Grid/mode state — _grid_cols/_grid_rows are the *effective* values
+        # used by the display loop. For auto-fit they're computed at display
+        # start; otherwise they mirror config.qr_grid_cols/rows.
         # _grid_cols/_grid_rows are the actual layout used by display loop.
         # For "auto" mode, these are computed at display start from the
         # server-window's current monitor dimensions.
@@ -250,140 +423,25 @@ class QRLServerGUI:
         self._build_status_bar()
 
     def _build_workflow_panel(self, parent: ttk.Frame) -> None:
-        # === 1. File or folder ===
-        file_card = card(parent)
-        file_card.pack(fill=tk.X, pady=(0, 12))
-        section_heading(file_card, "1. File or folder to send", on_card=True).pack(anchor="w")
-        ttk.Label(
-            file_card,
-            text="A folder is sent as a tar archive and auto-extracted on the client.",
-            style="CardMuted.TLabel",
-        ).pack(anchor="w", pady=(2, 8))
-
-        file_row = ttk.Frame(file_card, style="Card.TFrame")
-        file_row.pack(fill=tk.X)
-        self.file_path_var = tk.StringVar()
-        self.file_entry = ttk.Entry(file_row, textvariable=self.file_path_var)
-        self.file_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
-        ttk.Button(file_row, text="File…", command=self._browse_file).pack(
-            side=tk.LEFT, padx=(8, 0)
-        )
-        ttk.Button(file_row, text="Folder…", command=self._browse_folder).pack(
-            side=tk.LEFT, padx=(4, 0)
-        )
-
-        # Drag-and-drop hint + wire up DND on the file entry if available
-        hint = "Drag a file or folder here, or use the buttons." if self._dnd_available else ""
-        self.file_info_var = tk.StringVar(value=hint)
-        ttk.Label(file_card, textvariable=self.file_info_var, style="CardMuted.TLabel").pack(
-            anchor="w", pady=(8, 0)
-        )
-
-        if self._dnd_available:
-            self._wire_drag_and_drop(file_card)
-            self._wire_drag_and_drop(self.file_entry)
-
-        # === 2. Speed ===
-        speed_card = card(parent)
-        speed_card.pack(fill=tk.X, pady=(0, 12))
-        section_heading(speed_card, "2. Display speed", on_card=True).pack(anchor="w")
-        ttk.Label(
-            speed_card,
-            text="Faster sends more data per second; the client must keep up.",
-            style="CardMuted.TLabel",
-        ).pack(anchor="w", pady=(2, 8))
-
-        speed_chips = ttk.Frame(speed_card, style="Card.TFrame")
-        speed_chips.pack(fill=tk.X)
-        self.speed_buttons: List[ttk.Button] = []
-        for label, duration in SPEED_PRESETS:
-            btn = ttk.Button(
-                speed_chips,
-                text=label,
-                style="Chip.TButton",
-                command=lambda d=duration: self._set_speed_preset(d),
-            )
-            btn.pack(side=tk.LEFT, padx=(0, 6))
-            self.speed_buttons.append(btn)
-
-        # === 3. Quality / chunk size ===
-        quality_card = card(parent)
-        quality_card.pack(fill=tk.X, pady=(0, 12))
-        section_heading(quality_card, "3. QR quality", on_card=True).pack(anchor="w")
-        ttk.Label(
-            quality_card,
-            text="Higher robustness recovers from screen glare; lower fits more bytes per QR.",
-            style="CardMuted.TLabel",
-        ).pack(anchor="w", pady=(2, 8))
-
-        quality_chips = ttk.Frame(quality_card, style="Card.TFrame")
-        quality_chips.pack(fill=tk.X)
-        self.quality_buttons: List[ttk.Button] = []
-        for label, ec, chunk in QUALITY_PRESETS:
-            btn = ttk.Button(
-                quality_chips,
-                text=label,
-                style="Chip.TButton",
-                command=lambda e=ec, c=chunk: self._set_quality_preset(e, c),
-            )
-            btn.pack(side=tk.LEFT, padx=(0, 6))
-            self.quality_buttons.append(btn)
-
-        # === 4. Pixel density ===
-        density_card = card(parent)
-        density_card.pack(fill=tk.X, pady=(0, 12))
-        section_heading(density_card, "4. QR pixel density", on_card=True).pack(anchor="w")
-        ttk.Label(
-            density_card,
-            text="Pixels per QR module. Higher = sharper, harder for the client to misread.",
-            style="CardMuted.TLabel",
-        ).pack(anchor="w", pady=(2, 8))
-
-        density_chips = ttk.Frame(density_card, style="Card.TFrame")
-        density_chips.pack(fill=tk.X)
-        self.density_buttons: List[ttk.Button] = []
-        for label, box_size in DENSITY_PRESETS:
-            btn = ttk.Button(
-                density_chips,
-                text=label,
-                style="Chip.TButton",
-                command=lambda b=box_size: self._set_density_preset(b),
-            )
-            btn.pack(side=tk.LEFT, padx=(0, 6))
-            self.density_buttons.append(btn)
-
-        # === 5. Throughput mode (single vs grid) ===
-        mode_card = card(parent)
-        mode_card.pack(fill=tk.X, pady=(0, 12))
-        section_heading(mode_card, "5. Throughput mode", on_card=True).pack(anchor="w")
-        ttk.Label(
-            mode_card,
-            text="Display multiple QRs at once for parallel decoding.",
-            style="CardMuted.TLabel",
-        ).pack(anchor="w", pady=(2, 8))
-
-        mode_chips = ttk.Frame(mode_card, style="Card.TFrame")
-        mode_chips.pack(fill=tk.X)
-        self.mode_buttons: List[ttk.Button] = []
-        for label, streams in MODE_PRESETS:
-            btn = ttk.Button(
-                mode_chips,
-                text=label,
-                style="Chip.TButton",
-                command=lambda s=streams: self._set_mode_preset(s),
-            )
-            btn.pack(side=tk.LEFT, padx=(0, 6))
-            self.mode_buttons.append(btn)
-
-        # === Primary actions ===
+        # === Primary actions — pinned at the bottom, always visible ===
+        # Pack BEFORE the scroll area: tkinter's BOTTOM allocator takes space
+        # from the bottom first, leaving the rest for the expanding scroll frame.
         action_card = card(parent)
-        action_card.pack(fill=tk.X, pady=(0, 12))
+        action_card.pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
         actions = ttk.Frame(action_card, style="Card.TFrame")
         actions.pack(fill=tk.X)
 
-        self.encode_btn = ttk.Button(
-            actions, text="⚙  Prepare", command=self._encode_file
-        )
+        ttk.Label(
+            action_card,
+            text=(
+                "⚙ Prepare  compresses your file, splits it into chunks, and validates settings.\n"
+                "▶ Start display  opens the QR window — point the client at it to receive the file."
+            ),
+            style="CardMuted.TLabel",
+            justify=tk.LEFT,
+        ).pack(anchor="w", pady=(8, 0))
+
+        self.encode_btn = ttk.Button(actions, text="⚙  Prepare", command=self._encode_file)
         self.encode_btn.pack(side=tk.LEFT)
 
         self.display_btn = ttk.Button(
@@ -404,21 +462,213 @@ class QRLServerGUI:
         )
         self.stop_btn.pack(side=tk.LEFT, padx=(8, 0))
 
-        # Right side: export menu (PDF / video for offline replay)
         self.export_video_btn = ttk.Button(
-            actions,
-            text="Export video…",
-            command=self._export_video,
-            state=tk.DISABLED,
+            actions, text="Export video…", command=self._export_video, state=tk.DISABLED,
         )
         self.export_video_btn.pack(side=tk.RIGHT)
         self.export_pdf_btn = ttk.Button(
-            actions,
-            text="Export PDF…",
-            command=self._export_pdf,
-            state=tk.DISABLED,
+            actions, text="Export PDF…", command=self._export_pdf, state=tk.DISABLED,
         )
         self.export_pdf_btn.pack(side=tk.RIGHT, padx=(0, 6))
+
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
+
+        # === Scrollable configuration sections (1–5) ===
+        scroll = _ScrollableFrame(parent)
+        scroll.pack(fill=tk.BOTH, expand=True)
+        sections = scroll.inner
+
+        # === 1. File or folder ===
+        file_card = card(sections)
+        file_card.pack(fill=tk.X, pady=(0, 12))
+        section_heading(file_card, "1. File or folder to send", on_card=True).pack(anchor="w")
+        ttk.Label(
+            file_card,
+            text="A folder is sent as a tar archive and auto-extracted on the client.",
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
+        file_row = ttk.Frame(file_card, style="Card.TFrame")
+        file_row.pack(fill=tk.X)
+        self.file_path_var = tk.StringVar()
+        self.file_entry = ttk.Entry(file_row, textvariable=self.file_path_var)
+        self.file_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=2)
+        ttk.Button(file_row, text="File…", command=self._browse_file).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
+        ttk.Button(file_row, text="Folder…", command=self._browse_folder).pack(
+            side=tk.LEFT, padx=(4, 0)
+        )
+
+        hint = "Drag a file or folder here, or use the buttons." if self._dnd_available else ""
+        self.file_info_var = tk.StringVar(value=hint)
+        ttk.Label(file_card, textvariable=self.file_info_var, style="CardMuted.TLabel").pack(
+            anchor="w", pady=(8, 0)
+        )
+
+        if self._dnd_available:
+            self._wire_drag_and_drop(file_card)
+            self._wire_drag_and_drop(self.file_entry)
+
+        # === 2. Speed ===
+        speed_card = card(sections)
+        speed_card.pack(fill=tk.X, pady=(0, 12))
+        section_heading(speed_card, "2. Display speed", on_card=True).pack(anchor="w")
+        ttk.Label(
+            speed_card,
+            text=(
+                "How long each QR code is shown before switching to the next one.\n"
+                "Faster = more data per second, but the client's camera must be able to keep up.\n"
+                "If the client reports missed frames, slow down."
+            ),
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
+        speed_chips = ttk.Frame(speed_card, style="Card.TFrame")
+        speed_chips.pack(fill=tk.X)
+        self.speed_buttons: List[ttk.Button] = []
+        for label, duration in SPEED_PRESETS:
+            btn = ttk.Button(
+                speed_chips,
+                text=label,
+                style="Chip.TButton",
+                command=lambda d=duration: self._set_speed_preset(d),
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            self.speed_buttons.append(btn)
+
+        # === 3. Quality / chunk size ===
+        quality_card = card(sections)
+        quality_card.pack(fill=tk.X, pady=(0, 12))
+        section_heading(quality_card, "3. QR quality", on_card=True).pack(anchor="w")
+        ttk.Label(
+            quality_card,
+            text=(
+                "Controls how much data fits in each QR code and how well it survives screen glare.\n"
+                "Trade-off: more robustness = fewer bytes per QR = more QR codes = slower transfer."
+            ),
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
+        # QR version picker
+        version_row = ttk.Frame(quality_card, style="Card.TFrame")
+        version_row.pack(fill=tk.X)
+        ttk.Label(version_row, text="QR version:", style="CardMuted.TLabel").pack(side=tk.LEFT)
+        version_values = ["Auto (fit data)"] + [str(v) for v in range(1, 41)]
+        self.version_combo = ttk.Combobox(
+            version_row, values=version_values, state="readonly", width=16,
+        )
+        self.version_combo.set("Auto (fit data)")
+        self.version_combo.pack(side=tk.LEFT, padx=(8, 0))
+        self.version_combo.bind("<<ComboboxSelected>>", self._on_version_changed)
+        self.version_cap_var = tk.StringVar()
+        ttk.Label(
+            version_row, textvariable=self.version_cap_var, style="CardMuted.TLabel",
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(
+            quality_card,
+            text=(
+                "Version = the size/density of the QR grid (v1 = 21×21 modules, v40 = 177×177).\n"
+                "Auto lets the library pick the smallest version that fits your chunk size — leave\n"
+                "this on Auto unless you have a specific reason to pin it."
+            ),
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
+
+        # Error-correction level
+        ec_chips = ttk.Frame(quality_card, style="Card.TFrame")
+        ec_chips.pack(fill=tk.X, pady=(10, 0))
+        self.ec_buttons: List[ttk.Button] = []
+        for label, ec in EC_LEVELS:
+            btn = ttk.Button(
+                ec_chips,
+                text=label,
+                style="Chip.TButton",
+                command=lambda e=ec: self._set_ec_level(e),
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            self.ec_buttons.append(btn)
+        ttk.Label(
+            quality_card,
+            text="L = 7%  ·  M = 15%  ·  Q = 25%  ·  H = 30% damage/glare recovery",
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
+
+        # Bytes / QR slider — ceiling set by EC level + version
+        chunk_row = ttk.Frame(quality_card, style="Card.TFrame")
+        chunk_row.pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(chunk_row, text="Bytes / QR:", style="CardMuted.TLabel").pack(side=tk.LEFT)
+        self.chunk_size_var = tk.IntVar(value=self.config.chunk_size)
+        self.chunk_slider = ttk.Scale(
+            chunk_row,
+            from_=50,
+            to=self.config.chunk_size,
+            orient=tk.HORIZONTAL,
+            variable=self.chunk_size_var,
+            command=self._on_chunk_slider,
+        )
+        self.chunk_slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 8))
+        self.chunk_label_var = tk.StringVar()
+        ttk.Label(chunk_row, textvariable=self.chunk_label_var, style="Card.TLabel", width=8).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(
+            quality_card,
+            text=(
+                "How many raw data bytes go into each QR code (header overhead excluded).\n"
+                "More bytes = fewer QRs total but each is denser and slightly harder to scan.\n"
+                "Less bytes = more QRs but each decodes more reliably. Max is set by version + EC level."
+            ),
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(4, 0))
+
+        # === 4. Pixel density ===
+        density_card = card(sections)
+        density_card.pack(fill=tk.X, pady=(0, 12))
+        section_heading(density_card, "4. QR pixel density", on_card=True).pack(anchor="w")
+        ttk.Label(
+            density_card,
+            text=(
+                "Screen pixels per QR module (each module is one of the tiny black/white squares).\n"
+                "Higher = the generated image is physically larger and sharper.\n"
+                "For live display the window scales the image to fit, so this mainly affects\n"
+                "exported PDF/video quality. Leave on Normal (10 px) for everyday use."
+            ),
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
+        density_chips = ttk.Frame(density_card, style="Card.TFrame")
+        density_chips.pack(fill=tk.X)
+        self.density_buttons: List[ttk.Button] = []
+        for label, box_size in DENSITY_PRESETS:
+            btn = ttk.Button(
+                density_chips,
+                text=label,
+                style="Chip.TButton",
+                command=lambda b=box_size: self._set_density_preset(b),
+            )
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+            self.density_buttons.append(btn)
+
+        # === 5. Throughput mode (single vs grid) ===
+        mode_card = card(sections)
+        mode_card.pack(fill=tk.X, pady=(0, 12))
+        section_heading(mode_card, "5. Throughput mode", on_card=True).pack(anchor="w")
+        ttk.Label(
+            mode_card,
+            text=(
+                "Show multiple independent QR streams side-by-side. Each stream carries a different\n"
+                "portion of the file in parallel — the client reads all streams simultaneously and\n"
+                "merges them. A 2×2 grid gives ~4× the data throughput of a single QR.\n"
+                "The client must be able to see the entire grid clearly."
+            ),
+            style="CardMuted.TLabel",
+        ).pack(anchor="w", pady=(2, 8))
+
+        self.grid_picker = _GridPicker(
+            mode_card, on_change=self._on_grid_changed, style="Card.TFrame"
+        )
+        self.grid_picker.pack(fill=tk.X)
 
     def _build_status_panel(self, parent: ttk.Frame) -> None:
         # Summary card
@@ -513,9 +763,19 @@ class QRLServerGUI:
         except Exception as e:
             self._log(f"Using default config: {e}")
         self._set_speed_preset(self.config.duration, refresh_only=True)
-        self._set_quality_preset(self.config.error_correction, self.config.chunk_size, refresh_only=True)
+        # Sync version combo before quality preset so _sync_chunk_slider_max
+        # uses the correct version when computing the slider ceiling.
+        if hasattr(self, "version_combo"):
+            v = self.config.qr_version
+            self.version_combo.set(str(v) if v is not None else "Auto (fit data)")
+        self._set_ec_level(self.config.error_correction, refresh_only=True)
         self._set_density_preset(self.config.qr_box_size, refresh_only=True)
-        self._set_mode_preset(1, refresh_only=True)
+        self._apply_grid(
+            self.config.qr_grid_cols,
+            self.config.qr_grid_rows,
+            auto=self.config.qr_grid_auto,
+            refresh_only=True,
+        )
         self._refresh_summary()
 
     def _set_speed_preset(self, duration: float, refresh_only: bool = False) -> None:
@@ -532,14 +792,61 @@ class QRLServerGUI:
             btn.configure(style=style)
         self._refresh_summary()
 
-    def _set_quality_preset(self, ec: str, chunk_size: int, refresh_only: bool = False) -> None:
+    def _set_ec_level(self, ec: str, refresh_only: bool = False) -> None:
         if not refresh_only:
             self.config.error_correction = ec
-            self.config.chunk_size = chunk_size
-        for btn, (_, level, _) in zip(self.quality_buttons, QUALITY_PRESETS):
-            style = "ChipActive.TButton" if level == self.config.error_correction else "Chip.TButton"
-            btn.configure(style=style)
+        for btn, (_, level) in zip(self.ec_buttons, EC_LEVELS):
+            btn.configure(style="ChipActive.TButton" if level == self.config.error_correction else "Chip.TButton")
+        if hasattr(self, "chunk_slider"):
+            self._sync_chunk_slider_max()
+            self.chunk_size_var.set(self.config.chunk_size)
         self._refresh_summary()
+
+    def _on_version_changed(self, _event=None) -> None:
+        val = self.version_combo.get()
+        self.config.qr_version = None if val == "Auto (fit data)" else int(val)
+        self._sync_chunk_slider_max()
+        self._refresh_summary()
+
+    def _on_chunk_slider(self, _value) -> None:
+        self.config.chunk_size = int(self.chunk_size_var.get())
+        self._sync_chunk_slider_max()
+        self._refresh_summary()
+
+    def _sync_chunk_slider_max(self) -> None:
+        """Update slider ceiling and capacity label to reflect EC level + QR version.
+
+        Ceiling = total QR capacity minus HEADER_SIZE (9 bytes), giving the
+        maximum user-visible payload that fits alongside the chunk header.
+        """
+        if not hasattr(self, "chunk_slider"):
+            return
+        from .chunk import HEADER_SIZE
+        from .qr_generator import QRGenerator
+        if self.config.qr_version is not None:
+            total = QRGenerator.get_version_chunk_capacity(
+                self.config.qr_version, self.config.error_correction
+            )
+            cap = max(0, total - HEADER_SIZE)
+            self.version_cap_var.set(f"max {cap} B at v{self.config.qr_version}")
+        else:
+            total = QRGenerator.get_max_chunk_size(self.config.error_correction)
+            cap = max(0, total - HEADER_SIZE)
+            auto_v = self._compute_auto_version(self.config.chunk_size + HEADER_SIZE)
+            self.version_cap_var.set(f"max {cap} B  ·  auto → v{auto_v}")
+        cap = max(cap, 50)
+        self.chunk_slider.configure(to=cap)
+        if self.config.chunk_size > cap:
+            self.config.chunk_size = cap
+            self.chunk_size_var.set(cap)
+        self.chunk_label_var.set(f"{self.config.chunk_size} B")
+
+    def _compute_auto_version(self, needed_bytes: int) -> int:
+        """Smallest QR version (1-40) that can hold needed_bytes at current EC level."""
+        for v in range(1, 41):
+            if QRGenerator.get_version_chunk_capacity(v, self.config.error_correction) >= needed_bytes:
+                return v
+        return 40
 
     def _set_density_preset(self, box_size: int, refresh_only: bool = False) -> None:
         """Pixels per QR module. Affects native render size and on-screen sharpness."""
@@ -559,38 +866,53 @@ class QRLServerGUI:
     # too small to scan, especially after capture downsampling.
     AUTO_QR_TARGET_PX = 400
 
-    def _set_mode_preset(self, mode_value, refresh_only: bool = False) -> None:
-        """mode_value is either an int (explicit num_streams) or "auto"."""
+    def _on_grid_changed(self, cols: int, rows: int, auto: bool) -> None:
+        """Callback fired by the GridPicker when the user clicks a cell or
+        toggles auto-fit."""
+        self._apply_grid(cols, rows, auto=auto)
+
+    def _apply_grid(self, cols: int, rows: int, auto: bool, *,
+                    refresh_only: bool = False) -> None:
+        """Update the effective grid layout used by the display loop and
+        persist it to ServerConfig.
+
+        - cols/rows are clamped to [1, 32].
+        - When auto=True, the user's cols/rows are remembered (so unchecking
+          auto restores them) but the *effective* grid is recomputed from the
+          monitor under the server window. It's recomputed again at display
+          start in case the window moved.
+        - refresh_only=True skips the config write and just resyncs derived
+          state and the picker UI from current config (used during config load).
+        """
         if not refresh_only:
-            self._mode_value = mode_value
-            if mode_value == "auto":
-                # Compute now using the server window's current monitor; will
-                # be recomputed at display start in case the window moved.
-                cols, rows = self._auto_grid_for_current_monitor()
-                self._grid_cols, self._grid_rows = cols, rows
-                self.use_parallel_encoding = (cols * rows) > 1
-                self._mode_streams = cols * rows
+            self.config.qr_grid_cols = max(1, min(int(cols), 32))
+            self.config.qr_grid_rows = max(1, min(int(rows), 32))
+            self.config.qr_grid_auto = bool(auto)
+
+        if self.config.qr_grid_auto:
+            ec, er = self._auto_grid_for_current_monitor()
+            self._grid_cols, self._grid_rows = ec, er
+            if not refresh_only:
                 self._log(
-                    f"Auto-fit: {cols}×{rows} = {cols*rows} streams "
+                    f"Auto-fit: {ec}×{er} = {ec*er} streams "
                     f"(monitor {self._last_auto_monitor_label})"
                 )
-            else:
-                num = int(mode_value)
-                self.use_parallel_encoding = num > 1
-                self._mode_streams = num
-                if num == 1:
-                    self._grid_cols = self._grid_rows = 1
-                else:
-                    side = int(num ** 0.5)
-                    if side * side == num:
-                        self._grid_cols = self._grid_rows = side
-                    else:
-                        # Non-perfect-square explicit value — pack as a row
-                        self._grid_cols, self._grid_rows = num, 1
-            self.config.qr_grid_size = max(self._grid_cols, self._grid_rows)
-        for btn, (_, value) in zip(self.mode_buttons, MODE_PRESETS):
-            style = "ChipActive.TButton" if value == self._mode_value else "Chip.TButton"
-            btn.configure(style=style)
+        else:
+            self._grid_cols = self.config.qr_grid_cols
+            self._grid_rows = self.config.qr_grid_rows
+
+        self._mode_streams = self._grid_cols * self._grid_rows
+        self.use_parallel_encoding = self._mode_streams > 1
+
+        # Resync the picker UI to the saved config (the user's manual
+        # selection persists through auto toggling).
+        picker = getattr(self, "grid_picker", None)
+        if picker is not None:
+            picker.set_grid(
+                self.config.qr_grid_cols,
+                self.config.qr_grid_rows,
+                auto=self.config.qr_grid_auto,
+            )
         self._refresh_summary()
 
     def _auto_grid_for_current_monitor(self) -> tuple:
@@ -764,7 +1086,7 @@ class QRLServerGUI:
             if is_dir:
                 self._log_main("  ↳ Packing as tar archive (auto-extracted on the client)")
 
-            if self._mode_value == "auto":
+            if self.config.qr_grid_auto:
                 cols, rows = self._auto_grid_for_current_monitor()
                 self._grid_cols, self._grid_rows = cols, rows
                 self._mode_streams = cols * rows
@@ -790,6 +1112,7 @@ class QRLServerGUI:
                     error_correction=self.config.error_correction,
                     box_size=self.config.qr_box_size,
                     border=self.config.qr_border,
+                    qr_version=self.config.qr_version,
                 )
                 self.parallel_encoder.prepare_parallel_streams()
                 self.total_chunks = self.parallel_encoder.get_total_chunks()
@@ -815,6 +1138,7 @@ class QRLServerGUI:
                 self.encoder = QRLEncoder(
                     self.current_file,
                     chunk_size=self.config.chunk_size,
+                    qr_version=self.config.qr_version,
                     error_correction=self.config.error_correction,
                     box_size=self.config.qr_box_size,
                     border=self.config.qr_border,
@@ -1291,16 +1615,18 @@ class QRLServerGUI:
         module_count = max(1, native // max(box_size, 1))
 
         # Pick the largest integer pixels-per-module that fits target_px
-        per_module = max(1, target_px // module_count)
+        per_module = target_px // module_count
         new_size = per_module * module_count
 
-        # If the integer-multiple snap would waste more than ~15% of the cell
-        # (typical when target_px is barely larger than module_count, e.g. a
-        # 4x4 grid in a small window), fall back to BICUBIC at full target_px.
-        # The slight blur is tolerated fine by pyzbar after screen capture; the
-        # alternative is a tiny QR with massive whitespace around it.
+        # Cell smaller than module_count — must non-integer resize to fit at all.
+        if new_size <= 0 or new_size > target_px:
+            return qr_img.resize((target_px, target_px), Image.Resampling.BILINEAR)
+
+        # Integer-multiple snap would waste >15% of the cell (typical for a
+        # 4x4 grid in a small window). BILINEAR at full target_px is ~2-3x
+        # faster than BICUBIC and decoded fine by pyzbar after screen capture.
         if new_size < target_px * 0.85:
-            return qr_img.resize((target_px, target_px), Image.Resampling.BICUBIC)
+            return qr_img.resize((target_px, target_px), Image.Resampling.BILINEAR)
 
         if new_size == native:
             return qr_img

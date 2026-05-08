@@ -34,6 +34,10 @@ class CaptureHandler:
         self._frames: Deque[np.ndarray] = deque(maxlen=buffer_size)
         self._lock = threading.Lock()
         self._frames_captured = 0
+        # Signaled whenever new frames are pushed; allows consumers to block
+        # instead of sleep-polling. get_frames() clears it before draining so
+        # any frame that arrives after the clear will re-arm the event.
+        self._new_frames = threading.Event()
 
     def start(self) -> None:
         if self._running:
@@ -44,6 +48,7 @@ class CaptureHandler:
 
     def stop(self) -> None:
         self._running = False
+        self._new_frames.set()  # unblock any waiting consumer
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
@@ -51,8 +56,21 @@ class CaptureHandler:
     def is_running(self) -> bool:
         return self._running
 
+    def wait_for_frames(self, timeout: float = 0.1) -> bool:
+        """Block until frames are available or timeout expires.
+
+        Returns True if frames are (likely) available. Uses an Event so the
+        caller pays zero CPU while waiting — far cheaper than sleep-polling.
+        """
+        return self._new_frames.wait(timeout=timeout)
+
     def get_frames(self) -> List[np.ndarray]:
-        """Return and clear all buffered frames."""
+        """Return and clear all buffered frames.
+
+        Clears the event *before* draining so any frame that arrives between
+        the clear and the drain will re-arm it — prevents missed wakeups.
+        """
+        self._new_frames.clear()
         with self._lock:
             frames = list(self._frames)
             self._frames.clear()
@@ -63,6 +81,7 @@ class CaptureHandler:
         with self._lock:
             self._frames.append(frame)
             self._frames_captured += 1
+        self._new_frames.set()
 
     def set_region(self, region: Tuple[int, int, int, int]) -> None:
         self.region = region
@@ -91,6 +110,7 @@ class CaptureHandler:
 
         with mss.mss() as sct:
             mon = self._monitor_def(sct)
+            consecutive_failures = 0
             while self._running:
                 start = time.perf_counter()
                 try:
@@ -98,8 +118,14 @@ class CaptureHandler:
                     # mss returns BGRA; drop alpha for OpenCV/pyzbar
                     arr = np.asarray(raw)[:, :, :3].copy()
                     self.push_frame(arr)
+                    consecutive_failures = 0
                 except Exception:
-                    pass
+                    consecutive_failures += 1
+                    if consecutive_failures >= 5:
+                        # mss is repeatedly failing (e.g. resolution change or
+                        # display sleep). Back off exponentially to avoid a
+                        # hot spin that wastes CPU without producing frames.
+                        time.sleep(min(consecutive_failures * 0.2, 5.0))
                 elapsed = time.perf_counter() - start
                 wait = self.interval - elapsed
                 if wait > 0:
@@ -108,6 +134,7 @@ class CaptureHandler:
     def _fallback_capture_loop(self) -> None:
         from PIL import ImageGrab
 
+        consecutive_failures = 0
         while self._running:
             start = time.perf_counter()
             try:
@@ -118,10 +145,13 @@ class CaptureHandler:
                 img = ImageGrab.grab(bbox=bbox)
                 arr = np.array(img)
                 if arr.ndim == 3 and arr.shape[2] == 3:
-                    arr = arr[:, :, ::-1].copy()  # RGB → BGR
+                    arr = arr[:, :, ::-1].copy()  # RGB -> BGR
                 self.push_frame(arr)
+                consecutive_failures = 0
             except Exception:
-                pass
+                consecutive_failures += 1
+                if consecutive_failures >= 5:
+                    time.sleep(min(consecutive_failures * 0.2, 5.0))
             elapsed = time.perf_counter() - start
             wait = self.interval - elapsed
             if wait > 0:

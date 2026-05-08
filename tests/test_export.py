@@ -36,7 +36,7 @@ class TestExports(unittest.TestCase):
         self.gui.current_file = self.tmp_file.name
         self.gui._current_size_bytes = Path(self.tmp_file.name).stat().st_size
         self.gui.file_path_var.set(self.tmp_file.name)
-        self.gui._set_mode_preset(1)  # single-stream mode for simplicity
+        self.gui._apply_grid(1, 1, auto=False)  # single-stream mode for simplicity
         self.gui._encode_worker()
 
     def tearDown(self):
@@ -99,7 +99,7 @@ class TestExportsParallelMode(unittest.TestCase):
         try:
             self.gui.current_file = tmp.name
             self.gui._current_size_bytes = Path(tmp.name).stat().st_size
-            self.gui._set_mode_preset(4)  # 2x2 parallel
+            self.gui._apply_grid(2, 2, auto=False)  # 2x2 parallel
             self.gui._encode_worker()
             self.gui._export_pdf_worker(out.name)
             self.assertTrue(Path(out.name).exists())

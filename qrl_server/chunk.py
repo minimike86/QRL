@@ -124,13 +124,36 @@ class ChunkManager:
     def read_file(path: str) -> bytes:
         return Path(path).read_bytes()
 
-    @staticmethod
-    def read_directory(path: str) -> bytes:
-        """Pack a directory into a tar archive in memory."""
+    # Directories that are never useful to transfer — usually huge and
+    # always reconstructable from a lockfile or version-control checkout.
+    _DIR_EXCLUDES = frozenset({
+        ".git", ".hg", ".svn",
+        ".venv", "venv", ".env", "env",
+        "node_modules",
+        "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+        ".tox", ".nox",
+        "dist", "build", ".eggs", "*.egg-info",
+        ".DS_Store",
+    })
+
+    @classmethod
+    def _tar_filter(cls, tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        """Return None to skip an entry, tarinfo to include it."""
+        # Check every path component so nested excluded dirs are caught too.
+        parts = Path(tarinfo.name).parts
+        for part in parts:
+            name = part.rstrip("/")
+            if name in cls._DIR_EXCLUDES or name.endswith(".egg-info"):
+                return None
+        return tarinfo
+
+    @classmethod
+    def read_directory(cls, path: str) -> bytes:
+        """Pack a directory into a tar archive in memory, skipping junk dirs."""
         root = Path(path)
         if not root.is_dir():
             raise ValueError(f"Not a directory: {path}")
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tar:
-            tar.add(str(root), arcname=root.name)
+            tar.add(str(root), arcname=root.name, filter=cls._tar_filter)
         return buf.getvalue()

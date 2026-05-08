@@ -21,7 +21,8 @@ class ParallelQREncoder:
     def __init__(self, source_path: str, num_streams: int = 4,
                  chunk_size: int = 1024, error_correction: str = "Q",
                  box_size: Optional[int] = None,
-                 border: Optional[int] = None):
+                 border: Optional[int] = None,
+                 qr_version: Optional[int] = None):
         """
         Initialize parallel encoder.
 
@@ -33,6 +34,7 @@ class ParallelQREncoder:
                 fill widescreen displays much better than 4x4.
             chunk_size: Base chunk size per QR code
             error_correction: Error correction level
+            qr_version: QR version (1–40), None for auto
         """
         self.source_path = Path(source_path)
         self.num_streams = num_streams
@@ -40,6 +42,7 @@ class ParallelQREncoder:
         self.error_correction = error_correction
         self.box_size = box_size
         self.border = border
+        self.qr_version = qr_version
 
         if num_streams < 1 or num_streams > 254:
             raise ValueError(f"num_streams must be in [1, 254], got {num_streams}")
@@ -170,14 +173,22 @@ class ParallelQREncoder:
                 chunk_data = chunks[chunk_index]
                 if not QRGenerator.validate_chunk_size(len(chunk_data), self.error_correction):
                     raise ValueError(f"Chunk too large for QR code: {len(chunk_data)} bytes")
-                generator = QRGenerator(chunk_data, error_correction=self.error_correction)
+                generator = QRGenerator(
+                    chunk_data, self.qr_version,
+                    error_correction=self.error_correction,
+                    box_size=self.box_size, border=self.border,
+                )
                 images.append(generator.generate())
             elif chunks:
                 # Stream finished early — re-emit its last chunk. Decoder
                 # deduplicates, and re-sending real chunks gives the client
                 # extra recovery opportunities.
                 last = chunks[-1]
-                generator = QRGenerator(last, error_correction=self.error_correction)
+                generator = QRGenerator(
+                    last, self.qr_version,
+                    error_correction=self.error_correction,
+                    box_size=self.box_size, border=self.border,
+                )
                 images.append(generator.generate())
             else:
                 # Empty stream — emit the manifest as harmless filler

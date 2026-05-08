@@ -19,9 +19,8 @@ class ServerConfig:
     # Default to "Robust" (H-level error correction): tolerates ~30% damage vs
     # 25% for Q level. Screen-captured QRs benefit substantially because of
     # JPEG-style compression artefacts, monitor backlight bleed, and partial
-    # occlusion from cursors/notifications. 1140 is just under the H-level
-    # capacity (1150).
-    chunk_size: int = 1140
+    # occlusion from cursors/notifications. 1264 = H binary-mode v40 cap (1273) - 9 (header).
+    chunk_size: int = 1264
     error_correction: str = "H"
 
     # Display settings — 0.1s = 10 FPS, a good balance between throughput and
@@ -33,8 +32,12 @@ class ServerConfig:
     window_height: int = 600
     fullscreen: bool = False
 
-    # Multi-QR grid settings for higher throughput
-    qr_grid_size: int = 1      # 1x1, 2x2, 3x3, or 4x4 QR grid
+    # Multi-QR grid settings for higher throughput. cols/rows are independent
+    # (e.g. 2x4 = 2 wide, 4 tall = 8 streams). qr_grid_auto overrides cols/rows
+    # at display time by fitting as many cells as the screen allows.
+    qr_grid_cols: int = 1
+    qr_grid_rows: int = 1
+    qr_grid_auto: bool = False
     qr_physical_size: int = 400  # Physical size of each QR code in pixels
 
     # Pre-generate every QR image upfront (faster display, more memory).
@@ -60,6 +63,17 @@ class ServerConfig:
         """Create config from dictionary, filtering unknown keys."""
         valid_keys = {field.name for field in cls.__dataclass_fields__.values()}
         filtered_dict = {k: v for k, v in config_dict.items() if k in valid_keys}
+
+        # Legacy migration: pre-2026 configs used a single `qr_grid_size: int`
+        # for square N×N grids. Map it to the new cols/rows/auto trio when the
+        # new keys are absent.
+        legacy = config_dict.get("qr_grid_size")
+        if legacy is not None:
+            if "qr_grid_cols" not in filtered_dict:
+                filtered_dict["qr_grid_cols"] = int(legacy)
+            if "qr_grid_rows" not in filtered_dict:
+                filtered_dict["qr_grid_rows"] = int(legacy)
+
         return cls(**filtered_dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -100,11 +114,15 @@ class ServerConfig:
         if self.max_file_size <= 0:
             errors.append("max_file_size must be positive")
 
-        # qr_grid_size is the larger dimension of the display grid. Auto-fit
-        # mode can produce wide non-square grids (e.g. 12×7), so allow any
-        # positive value up to a sane cap.
-        if self.qr_grid_size < 1 or self.qr_grid_size > 32:
-            errors.append("qr_grid_size must be between 1 and 32")
+        # Independent col/row caps. Auto-fit ignores these at display time
+        # since it sizes to the actual screen.
+        if self.qr_grid_cols < 1 or self.qr_grid_cols > 32:
+            errors.append("qr_grid_cols must be between 1 and 32")
+        if self.qr_grid_rows < 1 or self.qr_grid_rows > 32:
+            errors.append("qr_grid_rows must be between 1 and 32")
+        # ParallelQREncoder caps total streams at 254 (1-byte stream id space).
+        if self.qr_grid_cols * self.qr_grid_rows > 254:
+            errors.append("qr_grid_cols × qr_grid_rows must not exceed 254")
 
         if self.qr_physical_size <= 50 or self.qr_physical_size > 1000:
             errors.append("qr_physical_size must be between 50 and 1000 pixels")
@@ -230,6 +248,9 @@ class ConfigManager:
             'window_title:': 'Title of the display window',
             'qr_version:': 'QR code version (1-40), null = auto-detect',
             'max_file_size:': 'Maximum file size to process (bytes)',
+            'qr_grid_cols:': 'Display grid width (1-32)',
+            'qr_grid_rows:': 'Display grid height (1-32)',
+            'qr_grid_auto:': 'Override cols/rows by fitting as many cells as the screen allows',
         }
 
         for line in lines:

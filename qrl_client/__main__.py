@@ -269,9 +269,10 @@ def main():
         start_time = time.time()
         last_progress_time = 0
 
-        # Capture and decode loop
+        # Capture and decode loop — block on the capture event instead of
+        # sleep-polling so we respond to each frame as soon as it arrives.
         while time.time() - start_time < config.timeout:
-            # Get captured frames
+            capture.wait_for_frames(timeout=min(config.interval * 2, 0.5))
             frames = capture.get_frames()
 
             if frames:
@@ -302,8 +303,6 @@ def main():
 
                     last_progress_time = current_time
 
-            time.sleep(0.1)  # Reduced sleep time for better responsiveness
-
         else:
             # Timeout reached
             print("\n[!] Timeout reached")
@@ -311,7 +310,7 @@ def main():
             print(f"Final progress: {stats['completion_percentage']:.1f}%")
 
             missing = decoder.get_missing_chunks()
-            if missing and len(missing) <= 10:  # Show up to 10 missing chunks
+            if missing and len(missing) <= 10:
                 print(f"Missing chunks: {missing}")
             elif missing:
                 print(f"Missing {len(missing)} chunks")
@@ -331,8 +330,8 @@ def main():
 
         # Show final progress
         if 'decoder' in locals():
-            stats = decoder.get_statistics()
-            print(f"Final progress: {stats['completion_percentage']:.1f}%")
+            progress = decoder.get_progress()
+            print(f"Final progress: {progress['percentage']:.1f}%")
 
         sys.exit(0)
     except QRLClientError as e:

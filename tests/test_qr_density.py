@@ -58,15 +58,21 @@ class TestUniformModulesAfterResize(unittest.TestCase):
         resized = self.gui._resize_to_clean_multiple(qr, target_px, box_size=box_size)
         native = qr.size[0]
         modules = native // box_size
-        # New size must be a clean multiple of module count
-        self.assertEqual(
-            resized.size[0] % modules,
-            0,
-            f"Resize {native}→{resized.size[0]} for target {target_px} (box_size={box_size}) "
-            f"breaks module uniformity — modules per side: {modules}",
-        )
-        # And it must fit in the cell
+        # Two valid outputs:
+        #   1. Integer-multiple snap: size is a clean multiple of module count
+        #      AND fits in the cell. Modules stay perfectly uniform.
+        #   2. Non-integer fallback (BILINEAR at target_px): used when the
+        #      integer snap would waste too much cell space (>15%) or when
+        #      the cell is smaller than module_count. Trades exact uniformity
+        #      for filling the cell — pyzbar still decodes after screen capture.
         self.assertLessEqual(resized.size[0], target_px)
+        if resized.size[0] != target_px:
+            self.assertEqual(
+                resized.size[0] % modules,
+                0,
+                f"Resize {native}→{resized.size[0]} for target {target_px} (box_size={box_size}) "
+                f"is neither a clean multiple of {modules} modules nor the BILINEAR fallback at {target_px}px",
+            )
 
     def test_uniformity_at_default_box_size(self):
         qr = QRGenerator(b"hello world test", error_correction="H").generate()

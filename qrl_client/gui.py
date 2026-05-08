@@ -503,18 +503,30 @@ class QRLClientGUI:
             self.capture_handler.start()
 
             start_time = time.time()
+            _last_progress_update = 0.0
             while self.is_capturing and (time.time() - start_time) < self.config.timeout:
+                # Block until frames arrive (or interval*2 elapses as a safety net).
+                # This replaces the fixed 20ms sleep-poll with a zero-CPU wait.
+                self.capture_handler.wait_for_frames(
+                    timeout=min(self.config.interval * 2, 0.5)
+                )
                 frames = self.capture_handler.get_frames()
                 if frames:
                     self._latest_preview = frames[-1]  # picked up by preview refresh on main thread
                     # Decode only the freshest frames; stale ones in the backlog
                     # are wasted work since the server holds each QR for ~duration.
                     success = self.decoder.decode(frames[-2:])
-                    self.root.after(0, self._update_progress)
+                    # Throttle progress UI updates to ≤5/sec — root.after(0)
+                    # queues instantly; flooding it at 30fps wastes Tk event
+                    # loop time on redundant label redraws.
+                    now = time.time()
+                    if now - _last_progress_update >= 0.2:
+                        self.root.after(0, self._update_progress)
+                        _last_progress_update = now
                     if success:
+                        self.root.after(0, self._update_progress)
                         self.root.after(0, self._decoding_complete)
                         return
-                time.sleep(0.02)
             # Loop exited without completion
             self.root.after(0, self._capture_finished_without_success)
         except Exception as e:
@@ -535,22 +547,28 @@ class QRLClientGUI:
     # ------------------------------------------------------------------
     # Live preview (runs on main thread via root.after)
     # ------------------------------------------------------------------
-    # Refresh interval — 200 ms = 5 FPS. The preview is a sanity check, not a
-    # video player; a higher rate competes with capture/decode for CPU and is
-    # the main reason the GUI feels laggy.
-    _PREVIEW_INTERVAL_MS = 200
+    # Refresh interval — 50 ms = 20 FPS. Capture runs in a background thread
+    # so the main-thread preview refresh doesn't compete with decode CPU.
+    _PREVIEW_INTERVAL_MS = 50
     # Resampling kernel — BILINEAR is ~10x faster than LANCZOS and indistinguishable
     # at preview sizes (200-400 px).
     _PREVIEW_RESAMPLE = Image.Resampling.BILINEAR
 
     def _schedule_preview_refresh(self) -> None:
-        self._refresh_preview()
-        self.root.after(self._PREVIEW_INTERVAL_MS, self._schedule_preview_refresh)
+        try:
+            self._refresh_preview()
+            self.root.after(self._PREVIEW_INTERVAL_MS, self._schedule_preview_refresh)
+        except tk.TclError:
+            pass  # root destroyed — stop the recurring callback
 
     def _refresh_preview(self) -> None:
         frame = self._latest_preview
         if frame is None:
             return
+        # Skip if this is the exact same array object we already rendered.
+        if frame is getattr(self, "_last_rendered_preview", None):
+            return
+        self._last_rendered_preview = frame
         try:
             cw = max(self.preview_canvas.winfo_width(), 100)
             ch = max(self.preview_canvas.winfo_height(), 100)

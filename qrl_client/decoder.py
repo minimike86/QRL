@@ -52,6 +52,12 @@ class QRLDecoder:
         # totals[stream_id] = expected number of chunks in that stream
         self._totals: Dict[int, int] = {}
 
+        # Running counters — kept in sync by _consume_qr_payload so that
+        # get_progress() and get_statistics() are O(1) instead of O(chunks).
+        self._received_chunks: int = 0   # unique chunks stored so far
+        self._total_chunks: int = 0      # sum of all known _totals values
+        self._bytes_received: int = 0    # raw bytes stored so far
+
         # Manifest received from a stream_id=255 chunk (if any)
         self._manifest: Optional[dict] = None
         # Final resolved output path (only known after manifest seen, if applicable)
@@ -101,12 +107,18 @@ class QRLDecoder:
                     pass  # ignore malformed manifest
             return
 
-        # Same stream may be re-seen with same total — that's fine; mismatched totals
-        # are protocol errors, but we tolerate them by trusting the latest.
-        self._totals[stream_id] = total
+        # Update running total counter when a stream reports a new (or changed) total.
+        old_total = self._totals.get(stream_id, 0)
+        if total != old_total:
+            self._total_chunks += total - old_total
+            self._totals[stream_id] = total
+
         bucket = self._streams.setdefault(stream_id, {})
         if sequence not in bucket:
+            self._received_chunks += 1
             self._unique_chunks += 1
+            self._bytes_received += len(data)
+            self.last_chunk_time = time.time()
         bucket[sequence] = data
         self._qrs_decoded_total += 1
 
@@ -116,10 +128,14 @@ class QRLDecoder:
     def is_complete(self) -> bool:
         if not self._totals:
             return False
+        # Fast path: running counters let us short-circuit without iterating streams.
+        if self._received_chunks < self._total_chunks:
+            return False
+        # Slow path: verify per-stream in case totals are uneven across streams.
         for stream_id, total in self._totals.items():
             if len(self._streams.get(stream_id, {})) < total:
                 return False
-        # If manifest declared more streams than we've received, wait for them
+        # If manifest declared more streams than we've received, wait for them.
         if self._manifest is not None:
             expected_streams = self._manifest.get("num_streams", 0)
             if expected_streams and len(self._totals) < expected_streams:
@@ -137,14 +153,11 @@ class QRLDecoder:
             return self._resolved_output_path
 
         out = Path(self.output_path)
-        # If output_path is a directory (existing or has no suffix), join with
-        # the manifest filename. Otherwise treat it as the literal target.
         treat_as_dir = out.is_dir() or (not out.exists() and out.suffix == "")
         if treat_as_dir:
             filename = (self._manifest or {}).get("filename") if self._manifest else None
             if not filename:
                 filename = "decoded.bin"
-            # Strip path separators from manifest filename for safety
             filename = Path(filename).name
             self._resolved_output_path = str(out / filename)
         else:
@@ -152,8 +165,9 @@ class QRLDecoder:
         return self._resolved_output_path
 
     def get_progress(self) -> dict:
-        total = sum(self._totals.values()) if self._totals else 0
-        decoded = sum(len(c) for c in self._streams.values())
+        """O(1) — uses running counters maintained by _consume_qr_payload."""
+        total = self._total_chunks
+        decoded = self._received_chunks
         percentage = (decoded / total * 100.0) if total > 0 else 0.0
         return {
             "percentage": percentage,
@@ -174,21 +188,26 @@ class QRLDecoder:
         return missing
 
     def get_statistics(self) -> dict:
+        """O(1) — uses running counters; keys are a superset of what both
+        the CLI and GUI expect."""
         elapsed = (time.time() - self._started_at) if self._started_at else 0.0
         elapsed = max(elapsed, 1e-3)
+        time_since_last = time.time() - self.last_chunk_time
 
-        bytes_received = sum(
-            sum(len(d) for d in chunks.values()) for chunks in self._streams.values()
-        )
-
+        progress = self.get_progress()
         return {
+            # Core counters
             "total_frames_processed": self._frames_processed,
             "qr_read_success_rate": self.reader.get_success_rate(),
             "qrs_decoded": self._qrs_decoded_total,
+            "successful_qr_reads": self._qrs_decoded_total,
             "unique_chunks": self._unique_chunks,
             "elapsed_time": elapsed,
-            "bytes_received": bytes_received,
-            "bytes_per_second": bytes_received / elapsed,
+            "bytes_received": self._bytes_received,
+            "bytes_per_second": self._bytes_received / elapsed,
+            # Convenience aliases used by the CLI
+            "completion_percentage": progress["percentage"],
+            "time_since_last_chunk": time_since_last,
         }
 
     def save_partial_progress(self) -> None:
@@ -223,19 +242,15 @@ class QRLDecoder:
             if isinstance(declared_size, int) and 0 < declared_size <= len(data):
                 data = data[:declared_size]
 
-        # If the server compressed the data, decompress it now (back to
-        # original_size bytes).
+        # If the server compressed the data, decompress it now.
         if self._manifest is not None and self._manifest.get("compressed"):
             try:
                 data = decompress(data)
             except Exception as e:
-                # Fall through and write the (broken) compressed bytes so the
-                # user can debug; better than losing the transfer entirely.
                 self._decompress_error = str(e)
 
         # If the manifest declared this was a directory, the data is a tar
-        # archive — extract it into the output folder instead of writing the
-        # raw bytes (which would just be a confusing untyped blob).
+        # archive — extract it into the output folder.
         if (
             self._manifest is not None
             and self._manifest.get("is_directory")
@@ -245,17 +260,14 @@ class QRLDecoder:
             target_dir.mkdir(parents=True, exist_ok=True)
             try:
                 with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
-                    # Python 3.12+ requires an explicit `filter` for safety
                     try:
                         tar.extractall(target_dir, filter="data")
                     except TypeError:
                         tar.extractall(target_dir)
-                # Resolved output path becomes the extracted folder for clarity
                 folder_name = self._manifest.get("filename", "decoded")
                 self._resolved_output_path = str(target_dir / Path(folder_name).name)
                 return
             except (tarfile.TarError, OSError) as e:
-                # Fall through and just write the raw tar bytes if extraction fails
                 self._extract_error = str(e)
 
         out = Path(self.resolve_output_path())
