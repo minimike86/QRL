@@ -1,0 +1,39 @@
+# QRL Client Configuration File
+# This file contains default settings for the QRL client
+# Adjust values as needed for your capture setup
+
+# Capture settings
+monitor: 0  # Monitor index (0 = primary monitor)
+interval: 0.5  # Capture interval in seconds
+timeout: 300  # Maximum capture time in seconds
+region: null  # Capture region [x, y, width, height], null = full screen
+
+# Processing settings
+progress_interval: 5.0  # How often to show progress in seconds
+save_progress: false
+max_missing_chunks: 10
+retry_attempts: 3
+
+# Detection settings
+qr_detection_threshold: 0.3  # QR detection sensitivity (0.0-1.0)
+image_preprocessing: true  # Enable image enhancement for better QR detection
+enhance_contrast: true
+noise_reduction: true
+
+# Output settings
+output_buffer_size: 1048576
+temp_directory: null
+cleanup_temp_files: true
+
+# GUI settings
+window_width: 900
+window_height: 700
+show_preview: true
+preview_size:
+- 400
+- 300
+
+# Advanced settings
+max_decode_attempts: 5  # Maximum attempts to decode each QR
+frame_buffer_size: 50
+log_level: INFO  # Logging level: DEBUG, INFO, WARNING, ERROR, CRITICAL

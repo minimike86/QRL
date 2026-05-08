@@ -1,0 +1,19 @@
+# QRL - QR Code Data Transfer PoC
+# Server dependencies
+qrcode[pil]>=7.4.2
+pillow>=10.0.0
+
+# Client dependencies
+opencv-python>=4.8.0
+pyzbar>=0.1.9
+numpy>=1.24.0
+
+# Shared dependencies
+tqdm>=4.65.0
+PyYAML>=6.0.0
+
+# Development dependencies (optional)
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.0.0
+flake8>=6.0.0
