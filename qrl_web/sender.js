@@ -306,8 +306,9 @@ function fmtBytes(n) {
 }
 
 function calcEta(totalChunks) {
-  const fps = Math.max(1, Math.min(15, parseInt(document.getElementById('fps').value) || 3));
-  const secs = Math.round((totalChunks + 1) / fps);
+  const fps    = Math.max(1, Math.min(15, parseInt(document.getElementById('fps').value) || 3));
+  const repeat = Math.max(1, parseInt(document.getElementById('chunkRepeat').value) || 1);
+  const secs = Math.round((totalChunks + 1) * repeat / fps);
   if (secs < 60) return secs + 's';
   return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
 }
@@ -345,6 +346,10 @@ document.getElementById('chunkSize').addEventListener('input', () => {
 });
 document.getElementById('ecLevel').addEventListener('change', reprepare);
 document.getElementById('fps').addEventListener('input', () => {
+  const el = document.getElementById('etaVal');
+  if (el) el.textContent = calcEta(framedChunks.length);
+});
+document.getElementById('chunkRepeat').addEventListener('input', () => {
   const el = document.getElementById('etaVal');
   if (el) el.textContent = calcEta(framedChunks.length);
 });

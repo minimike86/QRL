@@ -27,6 +27,7 @@ let frameCount = 0;
 let hitCount = 0;
 let newCount = 0;
 let dupCount = 0;
+let receiveStartTime = null;
 
 // Camera
 let mediaStream = null;
@@ -59,7 +60,7 @@ async function startCamera() {
     document.getElementById('resetBtn').classList.remove('hidden');
 
     scanning = true;
-    setStatus('Scanning… point camera at QRL sender.', 'warn');
+    setStatus('Scanning for manifest QR…', 'warn');
     rafId = requestAnimationFrame(scanLoop);
   } catch (err) {
     setStatus('Camera error: ' + err.message, 'err');
@@ -169,9 +170,12 @@ function processChunk(bytes) {
 
   if (chunk.streamId !== 0) return;  // only single-stream supported
 
-  // Learn total from chunk header even without manifest
-  if (!expectedTotal && chunk.totalChunks > 0) {
-    expectedTotal = chunk.totalChunks;
+  // Require manifest before accepting data chunks
+  if (!manifest) return;
+
+  if (received.size === 0) {
+    setStatus('Receiving chunks…', 'warn');
+    document.getElementById('scanTxt').textContent = 'receiving…';
   }
 
   if (received.has(chunk.sequence)) {
@@ -180,6 +184,7 @@ function processChunk(bytes) {
     return;
   }
 
+  if (!receiveStartTime) receiveStartTime = Date.now();
   received.set(chunk.sequence, chunk.payload);
   newCount++;
   document.getElementById('sNew').textContent = newCount;
@@ -246,8 +251,28 @@ function showManifest(m) {
   card.innerHTML =
     `<div class="fname">${m.filename}</div>` +
     `<div>${fmtBytes(m.original_size)}${comp} &nbsp;·&nbsp; ${m.total_chunks} chunks × ${m.chunk_size} B</div>` +
-    `<div style="color:#555">EC: ${m.error_correction} &nbsp;·&nbsp; ${m.is_directory ? 'folder (zip)' : 'file'}</div>`;
+    `<div style="color:#555">EC: ${m.error_correction} &nbsp;·&nbsp; ${m.is_directory ? 'folder (zip)' : 'file'} &nbsp;·&nbsp; ETA: <span id="rxEta">—</span></div>`;
   card.classList.remove('hidden');
+
+  // Reveal chunk map and progress immediately so the user can see the empty grid
+  document.getElementById('progressSection').classList.remove('hidden');
+  document.getElementById('chunkMap').classList.remove('hidden');
+  updateChunkMap();
+
+  document.getElementById('scanTxt').textContent = 'waiting for data…';
+  setStatus('Manifest received — waiting for sender to resume.', 'warn');
+}
+
+function calcRxEta() {
+  if (!receiveStartTime || received.size === 0 || !expectedTotal) return '—';
+  const elapsed = (Date.now() - receiveStartTime) / 1000;
+  if (elapsed < 1) return '—';
+  const rate = received.size / elapsed;
+  const remaining = expectedTotal - received.size;
+  if (remaining <= 0) return '0s';
+  const secs = Math.round(remaining / rate);
+  if (secs < 60) return secs + 's';
+  return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
 }
 
 function updateProgress() {
@@ -258,6 +283,8 @@ function updateProgress() {
   document.getElementById('pTotal').textContent = tot;
   document.getElementById('pPct').textContent = pct + '%';
   document.getElementById('progFill').style.width = pct + '%';
+  const etaEl = document.getElementById('rxEta');
+  if (etaEl) etaEl.textContent = calcRxEta();
   updateChunkMap();
 }
 
@@ -318,6 +345,7 @@ function resetState() {
   complete = false;
   assembledData = null;
   frameCount = hitCount = newCount = dupCount = 0;
+  receiveStartTime = null;
   ['sScans','sHits','sNew','sDups'].forEach(id => document.getElementById(id).textContent = '0');
   document.getElementById('manifestCard').classList.add('hidden');
   document.getElementById('downloadBtn').classList.add('hidden');
