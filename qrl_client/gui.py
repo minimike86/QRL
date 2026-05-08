@@ -495,7 +495,11 @@ class QRLClientGUI:
                 interval=self.config.interval,
             )
             # Pass the directory; decoder resolves filename from manifest.
-            self.decoder = QRLDecoder(self.output_dir, timeout=self.config.timeout)
+            self.decoder = QRLDecoder(
+                self.output_dir,
+                timeout=self.config.timeout,
+                preprocess=self.config.image_preprocessing,
+            )
             self.capture_handler.start()
 
             start_time = time.time()
@@ -503,7 +507,9 @@ class QRLClientGUI:
                 frames = self.capture_handler.get_frames()
                 if frames:
                     self._latest_preview = frames[-1]  # picked up by preview refresh on main thread
-                    success = self.decoder.decode(frames)
+                    # Decode only the freshest frames; stale ones in the backlog
+                    # are wasted work since the server holds each QR for ~duration.
+                    success = self.decoder.decode(frames[-2:])
                     self.root.after(0, self._update_progress)
                     if success:
                         self.root.after(0, self._decoding_complete)

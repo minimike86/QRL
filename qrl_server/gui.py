@@ -1027,7 +1027,7 @@ class QRLServerGUI:
 
     def _create_qr_display_window(self) -> None:
         self.qr_window = tk.Toplevel(self._window)
-        self.qr_window.title("QRL Display")
+        self.qr_window.title("QRL Display  ·  F11: fullscreen  ·  Esc: exit/close")
         self.qr_window.configure(bg="white")
 
         # Find the monitor that the SERVER window is currently on, so the
@@ -1037,17 +1037,24 @@ class QRLServerGUI:
         cy = self._window.winfo_y() + self._window.winfo_height() // 2
         target = monitor_at_point(cx, cy) or primary_monitor()
 
-        if target is not None:
-            # Two-step approach: position WITHOUT fullscreen first so Tk
-            # actually moves the window to the target monitor, then turn on
-            # fullscreen. Doing both in one go can leave fullscreen on the
-            # original monitor because the geometry move is async.
+        if self.config.fullscreen and target is not None:
+            # Position on target monitor at full size, then enable -fullscreen
+            # below. Doing both in one go can leave fullscreen on the original
+            # monitor because the geometry move is async.
             self.qr_window.geometry(
                 f"{target.width}x{target.height}{target.x:+d}{target.y:+d}"
             )
-            self._log(f"QR display targeting {target.name} ({target.width}x{target.height} at {target.x:+d},{target.y:+d})")
+            self._log(f"QR display fullscreen on {target.name} ({target.width}x{target.height})")
         else:
-            self.qr_window.geometry("800x600")
+            # Windowed: pick a sensible square and center on the target monitor.
+            win_w = win_h = 800
+            if target is not None:
+                off_x = target.x + max((target.width - win_w) // 2, 0)
+                off_y = target.y + max((target.height - win_h) // 2, 0)
+                self.qr_window.geometry(f"{win_w}x{win_h}{off_x:+d}{off_y:+d}")
+                self._log(f"QR display windowed on {target.name} ({win_w}x{win_h})")
+            else:
+                self.qr_window.geometry(f"{win_w}x{win_h}")
 
         self.qr_display_label = tk.Label(
             self.qr_window, bg="white", text="Loading…", font=self.fonts["body"]
@@ -1065,28 +1072,42 @@ class QRLServerGUI:
             self._update_button_states()
             set_status(self.status_label, "idle", "Idle")
 
-        self.qr_window.protocol("WM_DELETE_WINDOW", _close)
-        self.qr_window.bind("<Escape>", lambda _e: _close())
-        self.qr_window.bind("<F11>", lambda _e: self.qr_window.attributes(
-            "-fullscreen", not self.qr_window.attributes("-fullscreen")
-        ))
+        def _toggle_fullscreen(_e=None):
+            if self.qr_window is None:
+                return
+            self.qr_window.attributes(
+                "-fullscreen", not self.qr_window.attributes("-fullscreen")
+            )
 
-        # Force the window to materialize on the target monitor BEFORE going
-        # fullscreen. Without this, -fullscreen captures whichever monitor the
-        # window happened to be created on (usually the primary).
+        def _escape(_e=None):
+            # Exit fullscreen first if currently fullscreen; otherwise close.
+            if self.qr_window is None:
+                return
+            if self.qr_window.attributes("-fullscreen"):
+                self.qr_window.attributes("-fullscreen", False)
+            else:
+                _close()
+
+        self.qr_window.protocol("WM_DELETE_WINDOW", _close)
+        self.qr_window.bind("<Escape>", _escape)
+        self.qr_window.bind("<F11>", _toggle_fullscreen)
+
+        # Force the window to materialize on the target monitor BEFORE
+        # optionally going fullscreen — otherwise -fullscreen captures
+        # whichever monitor the window happened to be created on.
         self.qr_window.deiconify()
         self.qr_window.lift()
         self.qr_window.focus_force()
         self.qr_window.update_idletasks()
         self.qr_window.update()
 
-        # Now go fullscreen on the (now-correctly-positioned) monitor.
-        self.qr_window.attributes("-topmost", True)
-        self.qr_window.attributes("-fullscreen", True)
-        self.qr_window.update_idletasks()
-        # Drop topmost after a moment so it doesn't stay above everything forever
-        self.qr_window.after(500, lambda: self.qr_window.attributes("-topmost", False)
-                             if self.qr_window else None)
+        if self.config.fullscreen:
+            self.qr_window.attributes("-topmost", True)
+            self.qr_window.attributes("-fullscreen", True)
+            self.qr_window.update_idletasks()
+            # Drop topmost after a moment so it doesn't stay above everything forever
+            self.qr_window.after(500, lambda: self.qr_window.attributes("-topmost", False)
+                                 if self.qr_window else None)
 
     def _show_next_qr(self) -> None:
         if not self.is_displaying or not self.qr_window:
@@ -1187,11 +1208,15 @@ class QRLServerGUI:
         """Render a single PIL image, fit to the display window."""
         win_w = max(self.qr_window.winfo_width(), 200)
         win_h = max(self.qr_window.winfo_height(), 200)
-        # Scale image to fit while preserving aspect ratio
         iw, ih = image.size
-        scale = min(win_w / iw, win_h / ih, 1.0) if iw and ih else 1.0
-        if scale < 1.0:
-            image = image.resize((int(iw * scale), int(ih * scale)), Image.Resampling.NEAREST)
+        # Fit-to-window in both directions (scale up or down). NEAREST keeps
+        # module boundaries sharp on upscale; BICUBIC smooths the rare downscale.
+        scale = min(win_w / iw, win_h / ih) if iw and ih else 1.0
+        if abs(scale - 1.0) > 0.01:
+            new_w = max(int(iw * scale), 1)
+            new_h = max(int(ih * scale), 1)
+            resample = Image.Resampling.NEAREST if scale > 1.0 else Image.Resampling.BICUBIC
+            image = image.resize((new_w, new_h), resample)
         self.qr_photo = ImageTk.PhotoImage(image)
         self.qr_display_label.configure(image=self.qr_photo, text="")
         self.qr_display_label.image = self.qr_photo
@@ -1268,6 +1293,15 @@ class QRLServerGUI:
         # Pick the largest integer pixels-per-module that fits target_px
         per_module = max(1, target_px // module_count)
         new_size = per_module * module_count
+
+        # If the integer-multiple snap would waste more than ~15% of the cell
+        # (typical when target_px is barely larger than module_count, e.g. a
+        # 4x4 grid in a small window), fall back to BICUBIC at full target_px.
+        # The slight blur is tolerated fine by pyzbar after screen capture; the
+        # alternative is a tiny QR with massive whitespace around it.
+        if new_size < target_px * 0.85:
+            return qr_img.resize((target_px, target_px), Image.Resampling.BICUBIC)
+
         if new_size == native:
             return qr_img
         return qr_img.resize((new_size, new_size), Image.Resampling.NEAREST)

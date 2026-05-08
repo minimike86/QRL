@@ -38,17 +38,15 @@ class QRLDecoder:
                        (or "decoded.bin" if no manifest is seen)
     """
 
-    def __init__(self, output_path: str, timeout: int = 300):
+    def __init__(self, output_path: str, timeout: int = 300, preprocess: bool = True):
         self.output_path = output_path
         self.timeout = timeout
-        self.qr_reader = QRReader()
-        self.chunk_reassembler = ChunkReassembler()
         self.start_time = time.time()
         self.last_chunk_time = time.time()
         self._processed_frames = 0
         self._successful_reads = 0
 
-        self.reader = QRReader()
+        self.reader = QRReader(preprocess=preprocess)
         # streams: {stream_id: {sequence: data_bytes}}
         self._streams: Dict[int, Dict[int, bytes]] = {}
         # totals[stream_id] = expected number of chunks in that stream
