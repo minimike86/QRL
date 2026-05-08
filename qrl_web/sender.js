@@ -212,6 +212,7 @@ async function startTransfer() {
   document.getElementById('pauseBtn').classList.remove('hidden');
   document.getElementById('stopBtn').classList.remove('hidden');
   document.getElementById('qrSection').classList.remove('hidden');
+  document.getElementById('qrPlaceholder')?.classList.add('hidden');
   document.getElementById('sCycles').textContent = 0;
   setStatus('Transmitting…');
 
@@ -338,6 +339,7 @@ function startReplay() {
   document.getElementById('pauseBtn').classList.remove('hidden');
   document.getElementById('stopBtn').classList.remove('hidden');
   document.getElementById('qrSection').classList.remove('hidden');
+  document.getElementById('qrPlaceholder')?.classList.add('hidden');
   document.getElementById('sCycles').textContent = 0;
   setStatus(`Replaying ${indices.length} missing chunk(s)…`);
 
@@ -357,6 +359,8 @@ function stopTransfer(resetUI = true) {
     document.getElementById('startBtn').classList.remove('hidden');
     document.getElementById('pauseBtn').classList.add('hidden');
     document.getElementById('stopBtn').classList.add('hidden');
+    document.getElementById('qrSection').classList.add('hidden');
+    document.getElementById('qrPlaceholder')?.classList.remove('hidden');
     setStatus('Stopped.');
   }
 }

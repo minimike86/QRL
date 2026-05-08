@@ -121,6 +121,7 @@ async function startCamera() {
     video.play();
 
     document.getElementById('videoWrap').classList.remove('hidden');
+    document.getElementById('cameraPlaceholder')?.classList.add('hidden');
     document.getElementById('statsRow').classList.remove('hidden');
     document.getElementById('progressSection').classList.remove('hidden');
     document.getElementById('startBtn').classList.add('hidden');
@@ -157,6 +158,7 @@ function stopCamera() {
   if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
   document.getElementById('video').srcObject = null;
   document.getElementById('videoWrap').classList.add('hidden');
+  document.getElementById('cameraPlaceholder')?.classList.remove('hidden');
   document.getElementById('startBtn').classList.remove('hidden');
   document.getElementById('stopBtn').classList.add('hidden');
   if (!complete) setStatus('Camera stopped.', 'idle');
@@ -293,6 +295,8 @@ function finalise() {
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
   document.getElementById('video').srcObject = null;
+  document.getElementById('videoWrap').classList.add('hidden');
+  document.getElementById('cameraPlaceholder')?.classList.remove('hidden');
 
   let combined;
   if (manifest?.fountain) {
@@ -328,7 +332,6 @@ function finalise() {
 
   assembledData = data;
 
-  document.getElementById('videoWrap').classList.add('hidden');
   document.getElementById('stopBtn').classList.add('hidden');
   document.getElementById('chunkMap').classList.add('hidden');
   document.getElementById('downloadBtn').classList.remove('hidden');

@@ -8,125 +8,278 @@
 <title>QRL Web — Sender</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Courier New', monospace; background: #0d0d0d; color: #e0e0e0; min-height: 100vh; padding: 20px; padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); max-width: 700px; margin: 0 auto; }
-  h1 { color: #00ff88; font-size: 1.5rem; letter-spacing: 0.1em; margin-bottom: 4px; }
-  nav { color: #555; font-size: 0.8rem; margin-bottom: 24px; }
+  html { background: #0d0d0d; }
+  body { font-family: 'Courier New', monospace; background: #0d0d0d; color: #e0e0e0; min-height: 100vh; }
+
+  /* ── Two-column layout ──────────────────────────────────────────────────── */
+  .layout { display: flex; flex-direction: column; min-height: 100vh; }
+
+  .controls {
+    padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) 20px max(20px, env(safe-area-inset-left));
+  }
+
+  .display { display: flex; flex-direction: column; }
+
+  @media (min-width: 860px) {
+    .layout { flex-direction: row; }
+    .controls {
+      width: 400px; min-width: 400px; flex-shrink: 0;
+      padding: 36px 32px;
+      padding-left: max(32px, env(safe-area-inset-left));
+      border-right: 1px solid #161616;
+      overflow-y: auto; max-height: 100vh;
+      position: sticky; top: 0;
+    }
+    .display {
+      flex: 1; align-items: center; justify-content: center;
+      min-height: 100vh; padding: 48px 40px;
+      padding-right: max(40px, env(safe-area-inset-right));
+      background: #090909;
+    }
+  }
+
+  /* ── Typography ─────────────────────────────────────────────────────────── */
+  h1 { color: #00ff88; font-size: 1.4rem; letter-spacing: 0.1em; margin-bottom: 4px; }
+  nav { color: #555; font-size: 0.8rem; margin-bottom: 20px; }
   nav a { color: #00ff88; text-decoration: none; padding: 4px 0; display: inline-block; }
+
+  /* ── Buttons ────────────────────────────────────────────────────────────── */
   .pick-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
-  button { font-family: 'Courier New', monospace; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: bold; transition: opacity 0.15s; min-height: 44px; touch-action: manipulation; -webkit-tap-highlight-color: transparent; user-select: none; }
+  button {
+    font-family: 'Courier New', monospace; border: none; padding: 10px 20px;
+    border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: bold;
+    transition: opacity 0.15s; min-height: 44px; touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent; user-select: none;
+  }
   button:disabled { opacity: 0.35; cursor: not-allowed; }
-  .btn-primary { background: #00ff88; color: #000; }
+  .btn-primary  { background: #00ff88; color: #000; }
   .btn-secondary { background: #2a2a2a; color: #e0e0e0; border: 1px solid #333; }
-  .btn-danger { background: #cc3333; color: #fff; }
-  .btn-warn { background: #cc8800; color: #fff; }
-  .file-info { background: #111; border: 1px solid #222; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; font-size: 0.82rem; line-height: 1.7; }
+  .btn-danger   { background: #cc3333; color: #fff; }
+  .btn-warn     { background: #cc8800; color: #fff; }
+
+  /* ── File info ──────────────────────────────────────────────────────────── */
+  .file-info { background: #111; border: 1px solid #1e1e1e; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; font-size: 0.82rem; line-height: 1.7; }
   .file-info .fname { color: #00ff88; font-size: 0.95rem; }
-  .settings { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
-  .setting { display: flex; flex-direction: column; gap: 5px; }
-  .setting label { font-size: 0.72rem; color: #666; letter-spacing: 0.08em; }
-  .setting input, .setting select { background: #1a1a1a; color: #e0e0e0; border: 1px solid #333; padding: 10px 10px; border-radius: 5px; font-family: 'Courier New', monospace; font-size: max(16px, 0.85rem); width: 110px; min-height: 44px; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+
+  /* ── Settings ───────────────────────────────────────────────────────────── */
+  .settings { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 16px; }
+  .setting { display: flex; flex-direction: column; gap: 4px; position: relative; }
+
+  .setting > .lbl {
+    font-size: 0.68rem; color: #555; letter-spacing: 0.1em;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .hint-badge {
+    color: #2a2a2a; border: 1px solid #2a2a2a; border-radius: 50%;
+    width: 13px; height: 13px; font-size: 0.6em; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: color 0.15s, border-color 0.15s;
+    cursor: help;
+  }
+
+  .setting input, .setting select {
+    background: #1a1a1a; color: #e0e0e0; border: 1px solid #2a2a2a;
+    padding: 10px; border-radius: 5px;
+    font-family: 'Courier New', monospace; font-size: max(16px, 0.85rem);
+    width: 110px; min-height: 44px;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
+
+  .setting-hint {
+    position: absolute; top: calc(100% + 6px); left: 0; z-index: 100;
+    background: #141414; border: 1px solid #2a2a2a; border-radius: 6px;
+    padding: 9px 13px; font-size: 0.7rem; color: #888; line-height: 1.55;
+    width: 240px; pointer-events: none; display: none;
+    letter-spacing: 0; font-weight: normal;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.7);
+  }
+
+  @media (hover: hover) {
+    .setting:hover .setting-hint { display: block; }
+    .setting:hover .hint-badge { color: #666; border-color: #666; }
+  }
+
+  /* ── Status & actions ───────────────────────────────────────────────────── */
   .status { font-size: 0.8rem; color: #ffaa00; min-height: 1.2em; margin-bottom: 12px; }
-  .action-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
-  .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .action-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+
+  /* ── Replay ─────────────────────────────────────────────────────────────── */
+  .replay-section { margin-bottom: 16px; padding: 12px 16px; background: #111; border: 1px solid #1e1e1e; border-radius: 8px; }
+  .replay-hdr { font-size: 0.68rem; color: #555; letter-spacing: 0.1em; margin-bottom: 4px; }
+  .replay-desc { font-size: 0.7rem; color: #353535; margin-bottom: 8px; }
+  .replay-row { display: flex; gap: 8px; align-items: center; }
+  .replay-input {
+    background: #1a1a1a; color: #e0e0e0; border: 1px solid #2a2a2a;
+    padding: 10px; border-radius: 5px; font-family: 'Courier New', monospace;
+    font-size: max(16px, 0.82rem); min-height: 44px; flex: 1; min-width: 0;
+  }
+
+  /* ── QR display panel ───────────────────────────────────────────────────── */
+  .qr-placeholder {
+    display: none; flex-direction: column; align-items: center;
+    justify-content: center; gap: 20px; text-align: center; width: 100%;
+  }
+  @media (min-width: 860px) { .qr-placeholder { display: flex; } }
+
+  .ph-grid {
+    display: grid; grid-template-columns: repeat(7, 13px);
+    gap: 3px; opacity: 0.06;
+  }
+  .ph-grid span { display: block; width: 13px; height: 13px; background: #fff; border-radius: 2px; }
+  .ph-grid span.g { background: transparent; }
+  .qr-placeholder p { font-size: 0.72rem; color: #222; line-height: 1.7; max-width: 200px; }
+
+  .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
   #qrCanvas { border: 6px solid #fff; border-radius: 4px; display: block; max-width: 100%; background: #fff; }
+  @media (min-width: 860px) { #qrCanvas { max-width: min(90%, 580px); } }
+
   .chunk-label { font-size: 0.9rem; color: #888; letter-spacing: 0.05em; }
   .chunk-label span { color: #00ff88; font-weight: bold; }
-  .stats-bar { display: flex; gap: 24px; flex-wrap: wrap; background: #111; border: 1px solid #222; border-radius: 8px; padding: 14px 18px; width: 100%; }
+
+  .stats-bar {
+    display: flex; gap: 24px; flex-wrap: wrap;
+    background: #111; border: 1px solid #1a1a1a;
+    border-radius: 8px; padding: 14px 18px; width: 100%;
+  }
   .stat { display: flex; flex-direction: column; gap: 3px; }
   .stat-val { font-size: 1.4rem; color: #00ff88; font-weight: bold; }
   .stat-lbl { font-size: 0.68rem; color: #555; letter-spacing: 0.1em; }
-  .progress-bar { width: 100%; height: 6px; background: #222; border-radius: 3px; overflow: hidden; margin-top: 8px; }
+
+  .progress-bar { width: 100%; height: 6px; background: #1a1a1a; border-radius: 3px; overflow: hidden; }
   .progress-fill { height: 100%; background: #00ff88; transition: width 0.3s; }
+
+  /* ── Utilities ──────────────────────────────────────────────────────────── */
   .hidden { display: none !important; }
-  @keyframes qr-pulse { 0% { box-shadow: 0 0 0 0 rgba(0,255,136,0.6); } 100% { box-shadow: 0 0 0 14px rgba(0,255,136,0); } }
+
+  @keyframes qr-pulse {
+    0%   { box-shadow: 0 0 0 0   rgba(0,255,136,0.6); }
+    100% { box-shadow: 0 0 0 14px rgba(0,255,136,0);   }
+  }
   .qr-new { animation: qr-pulse 0.28s ease-out; }
-  .replay-section { margin-bottom: 16px; padding: 12px 16px; background: #111; border: 1px solid #222; border-radius: 8px; }
-  .replay-hdr { font-size: 0.72rem; color: #666; letter-spacing: 0.1em; margin-bottom: 4px; }
-  .replay-desc { font-size: 0.72rem; color: #444; margin-bottom: 8px; }
-  .replay-row { display: flex; gap: 8px; align-items: center; }
-  .replay-input { background: #1a1a1a; color: #e0e0e0; border: 1px solid #333; padding: 10px 10px; border-radius: 5px; font-family: 'Courier New', monospace; font-size: max(16px, 0.82rem); min-height: 44px; flex: 1; min-width: 0; }
+
+  /* ── Mobile overrides ───────────────────────────────────────────────────── */
   @media (max-width: 540px) {
     .settings { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .setting input, .setting select { width: 100%; }
     .stats-bar { gap: 16px; }
     .stat-val { font-size: 1.2rem; }
+    .action-row button { flex: 1; }
   }
 </style>
 </head>
 <body>
-<h1>QRL WEB — SENDER</h1>
-<nav><a href="index.html">← Home</a> &nbsp;|&nbsp; <a href="receiver.html">Open Receiver →</a></nav>
+<div class="layout">
 
-<div class="pick-row">
-  <button class="btn-primary" onclick="document.getElementById('fileInput').click()">Select File</button>
-  <button class="btn-secondary" onclick="document.getElementById('folderInput').click()">Select Folder</button>
-</div>
-<input type="file" id="fileInput" class="hidden">
-<input type="file" id="folderInput" class="hidden" webkitdirectory multiple>
+  <!-- ── Controls sidebar ───────────────────────────────────────────────── -->
+  <aside class="controls">
+    <h1>QRL WEB — SENDER</h1>
+    <nav><a href="index.html">← Home</a> &nbsp;|&nbsp; <a href="receiver.html">Open Receiver →</a></nav>
 
-<div id="fileInfo" class="file-info hidden"></div>
+    <div class="pick-row">
+      <button class="btn-primary" onclick="document.getElementById('fileInput').click()">Select File</button>
+      <button class="btn-secondary" onclick="document.getElementById('folderInput').click()">Select Folder</button>
+    </div>
+    <input type="file" id="fileInput" class="hidden">
+    <input type="file" id="folderInput" class="hidden" webkitdirectory multiple>
 
-<div class="settings">
-  <div class="setting">
-    <label>CHUNK SIZE (BYTES)</label>
-    <input type="number" id="chunkSize" value="600" min="100" max="1400" step="50" inputmode="numeric">
-  </div>
-  <div class="setting">
-    <label>FPS</label>
-    <input type="number" id="fps" value="3" min="1" max="15" step="1" inputmode="numeric">
-  </div>
-  <div class="setting">
-    <label>ERROR CORRECTION</label>
-    <select id="ecLevel">
-      <option value="L" selected>L — 7%</option>
-      <option value="M">M — 15%</option>
-      <option value="Q">Q — 25%</option>
-      <option value="H">H — 30%</option>
-    </select>
-  </div>
-  <div class="setting">
-    <label>QR SIZE (PX)</label>
-    <input type="number" id="qrSize" value="420" min="200" max="800" step="20" inputmode="numeric">
-  </div>
-  <div class="setting">
-    <label>FRAMES PER CHUNK</label>
-    <input type="number" id="chunkRepeat" value="1" min="1" max="30" step="1" inputmode="numeric">
-  </div>
-  <div class="setting">
-    <label>FOUNTAIN MODE</label>
-    <label style="display:flex;align-items:center;gap:8px;color:#e0e0e0;font-size:0.85rem;margin-top:6px;cursor:pointer">
-      <input type="checkbox" id="fountainToggle" style="width:auto;cursor:pointer"> On
-    </label>
-  </div>
-</div>
+    <div id="fileInfo" class="file-info hidden"></div>
 
-<div class="status" id="statusMsg"></div>
+    <div class="settings">
 
-<div class="action-row hidden" id="actionRow">
-  <button class="btn-primary" id="startBtn" onclick="startTransfer()">Start Transfer</button>
-  <button class="btn-warn hidden" id="pauseBtn" onclick="togglePause()">Pause</button>
-  <button class="btn-danger hidden" id="stopBtn" onclick="stopTransfer()">Stop</button>
-</div>
+      <div class="setting">
+        <div class="lbl">CHUNK SIZE (BYTES) <span class="hint-badge">?</span></div>
+        <input type="number" id="chunkSize" value="600" min="100" max="1400" step="50" inputmode="numeric">
+        <div class="setting-hint">Payload bytes per QR frame. Smaller = more reliable codes; larger = fewer total frames. 400–600 B suits most setups — reduce if codes are failing to scan.</div>
+      </div>
 
-<div class="replay-section hidden" id="replaySection">
-  <div class="replay-hdr">REPLAY MISSING CHUNKS</div>
-  <div class="replay-desc">Numbers (3,7), ranges (5-10), or comparisons (>=50, &lt;60)</div>
-  <div class="replay-row">
-    <input type="text" id="missingInput" class="replay-input" placeholder="e.g. 3,7,5-10,>=50,<60">
-    <button class="btn-warn" onclick="startReplay()">Replay</button>
-  </div>
-</div>
+      <div class="setting">
+        <div class="lbl">FPS <span class="hint-badge">?</span></div>
+        <input type="number" id="fps" value="3" min="1" max="15" step="1" inputmode="numeric">
+        <div class="setting-hint">Target frames per second. Higher FPS transfers faster but the receiver camera must keep up. 3–5 fps is reliable; go higher only in good lighting conditions.</div>
+      </div>
 
-<div class="qr-wrap hidden" id="qrSection">
-  <canvas id="qrCanvas"></canvas>
-  <div class="chunk-label" id="chunkLabel">—</div>
-  <div class="stats-bar">
-    <div class="stat"><div class="stat-val" id="sFrame">—</div><div class="stat-lbl">FRAME</div></div>
-    <div class="stat"><div class="stat-val" id="sTotal">—</div><div class="stat-lbl">TOTAL CHUNKS</div></div>
-    <div class="stat"><div class="stat-val" id="sCycles">0</div><div class="stat-lbl">CYCLES</div></div>
-    <div class="stat"><div class="stat-val" id="sFps">—</div><div class="stat-lbl">ACTUAL FPS</div></div>
-  </div>
-  <div class="progress-bar" style="width:100%"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
+      <div class="setting">
+        <div class="lbl">ERROR CORRECTION <span class="hint-badge">?</span></div>
+        <select id="ecLevel">
+          <option value="L" selected>L — 7%</option>
+          <option value="M">M — 15%</option>
+          <option value="Q">Q — 25%</option>
+          <option value="H">H — 30%</option>
+        </select>
+        <div class="setting-hint">Reed-Solomon redundancy baked into each QR code. Higher levels recover from more scan noise but shrink usable payload per frame. L is fine in good lighting; use M–H if scanning is unreliable.</div>
+      </div>
+
+      <div class="setting">
+        <div class="lbl">QR SIZE (PX) <span class="hint-badge">?</span></div>
+        <input type="number" id="qrSize" value="420" min="200" max="800" step="20" inputmode="numeric">
+        <div class="setting-hint">Rendered canvas size in pixels. Larger makes it easier to scan from a distance. 420–600 px suits most screens; go bigger if the receiver struggles to focus.</div>
+      </div>
+
+      <div class="setting">
+        <div class="lbl">FRAMES PER CHUNK <span class="hint-badge">?</span></div>
+        <input type="number" id="chunkRepeat" value="1" min="1" max="30" step="1" inputmode="numeric">
+        <div class="setting-hint">How many consecutive frames each chunk is held before advancing. Set to 2–3 if the receiver is missing many chunks at your current FPS. ETA scales proportionally.</div>
+      </div>
+
+      <div class="setting">
+        <div class="lbl">FOUNTAIN MODE <span class="hint-badge">?</span></div>
+        <label style="display:flex;align-items:center;gap:8px;color:#e0e0e0;font-size:0.85rem;margin-top:2px;cursor:pointer">
+          <input type="checkbox" id="fountainToggle" style="width:auto;cursor:pointer"> On
+        </label>
+        <div class="setting-hint">Generates infinite XOR-coded packets instead of sequential chunks. The receiver decodes the full file from any sufficient subset — no manual replay needed. Best for poor or intermittent scanning.</div>
+      </div>
+
+    </div><!-- .settings -->
+
+    <div class="status" id="statusMsg"></div>
+
+    <div class="action-row hidden" id="actionRow">
+      <button class="btn-primary" id="startBtn" onclick="startTransfer()">Start Transfer</button>
+      <button class="btn-warn hidden" id="pauseBtn" onclick="togglePause()">Pause</button>
+      <button class="btn-danger hidden" id="stopBtn" onclick="stopTransfer()">Stop</button>
+    </div>
+
+    <div class="replay-section hidden" id="replaySection">
+      <div class="replay-hdr">REPLAY MISSING CHUNKS</div>
+      <div class="replay-desc">Numbers (3,7), ranges (5-10), or comparisons (>=50, &lt;60)</div>
+      <div class="replay-row">
+        <input type="text" id="missingInput" class="replay-input" placeholder="e.g. 3,7,5-10,>=50,<60">
+        <button class="btn-warn" onclick="startReplay()">Replay</button>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ── QR display panel ────────────────────────────────────────────────── -->
+  <main class="display">
+
+    <div class="qr-placeholder" id="qrPlaceholder">
+      <!-- Finder-pattern decoration -->
+      <div class="ph-grid" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+        <span></span><span class="g"></span><span class="g"></span><span class="g"></span><span class="g"></span><span class="g"></span><span></span>
+        <span></span><span class="g"></span><span></span><span></span><span></span><span class="g"></span><span></span>
+        <span></span><span class="g"></span><span></span><span></span><span></span><span class="g"></span><span></span>
+        <span></span><span class="g"></span><span></span><span></span><span></span><span class="g"></span><span></span>
+        <span></span><span class="g"></span><span class="g"></span><span class="g"></span><span class="g"></span><span class="g"></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <p>Select a file and press<br>Start Transfer —<br>QR codes appear here</p>
+    </div>
+
+    <div class="qr-wrap hidden" id="qrSection">
+      <canvas id="qrCanvas"></canvas>
+      <div class="chunk-label" id="chunkLabel">—</div>
+      <div class="stats-bar">
+        <div class="stat"><div class="stat-val" id="sFrame">—</div><div class="stat-lbl">FRAME</div></div>
+        <div class="stat"><div class="stat-val" id="sTotal">—</div><div class="stat-lbl">TOTAL CHUNKS</div></div>
+        <div class="stat"><div class="stat-val" id="sCycles">0</div><div class="stat-lbl">CYCLES</div></div>
+        <div class="stat"><div class="stat-val" id="sFps">—</div><div class="stat-lbl">ACTUAL FPS</div></div>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
+    </div>
+
+  </main>
 </div>
 
 <script src="vendor/qrcode.min.js"></script>
