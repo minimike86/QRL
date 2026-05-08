@@ -428,20 +428,15 @@ class QRLClientGUI:
             self._update_button_states()
 
     def _select_region(self) -> None:
-        self._window.iconify()
-        self._window.update_idletasks()
-        # Tiny delay so the parent window is actually minimized before the
-        # picker grabs the screen.
-        self.root.after(150, self._open_region_picker)
-
-    def _open_region_picker(self) -> None:
+        # Open picker directly — the picker opens fullscreen overlays with
+        # -topmost on each monitor showing a dimmed screenshot, so the main
+        # window doesn't need to be minimized first. Skipping iconify removes
+        # the janky minimize/restore animation.
         try:
             region = pick_region(self._window)
         except Exception as e:
-            self._window.deiconify()
             messagebox.showerror("Region picker failed", str(e))
             return
-        self._window.deiconify()
         self._window.lift()
         if region is None:
             self._log("Region selection cancelled")
@@ -622,7 +617,10 @@ class QRLClientGUI:
                 self.preview_canvas.itemconfigure(
                     self._preview_canvas_id, image=self._preview_photo
                 )
-            self.preview_info_var.set(f"{pil.size[0]}×{pil.size[1]}  ·  preview 5 fps")
+            capture_fps = round(1.0 / max(self.config.interval, 1e-3))
+            self.preview_info_var.set(
+                f"{pil.size[0]}×{pil.size[1]}  ·  {capture_fps} fps capture"
+            )
         except Exception:
             pass
 

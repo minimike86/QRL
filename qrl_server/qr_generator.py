@@ -15,6 +15,43 @@ from qrcode.constants import (
     ERROR_CORRECT_Q,
 )
 
+# ---------------------------------------------------------------------------
+# Monkey-patch for a data-dependent bug in qrcode ≤8.2 (and possibly later).
+#
+# qrcode.base.Polynomial.__mod__ calls glog(self[0]) without guarding against
+# self[0] == 0.  In GF(256) polynomial long division the leading coefficient
+# of the remainder can be 0 after XOR cancellation for specific byte patterns
+# (confirmed with real JPEG chunk data).  glog(0) is undefined in GF(256)
+# and the library raises ValueError instead.
+#
+# Correct behaviour: if the leading coefficient is already 0 after the prior
+# step stripped it, the polynomial degree is actually lower — rebuild the
+# Polynomial so __init__ strips the leading zeros, then recurse.
+# ---------------------------------------------------------------------------
+def _patch_qrcode_poly_mod() -> None:
+    import qrcode.base as _base
+
+    _orig_mod = _base.Polynomial.__mod__
+
+    def _safe_mod(self, other):
+        difference = len(self) - len(other)
+        if difference < 0:
+            return self
+        if self[0] == 0:
+            # Leading zero survived __init__ stripping — rebuild without it.
+            trimmed = list(self.num)
+            while trimmed and trimmed[0] == 0:
+                trimmed.pop(0)
+            if not trimmed:
+                return self  # all-zero polynomial is its own remainder
+            return _base.Polynomial(trimmed, 0) % other
+        return _orig_mod(self, other)
+
+    _base.Polynomial.__mod__ = _safe_mod
+
+
+_patch_qrcode_poly_mod()
+
 
 def _pool_worker_generate(args) -> Image.Image:
     """Top-level worker callable for ProcessPoolExecutor (must be picklable).
