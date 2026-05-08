@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QRL Web — Sender</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Courier New', monospace; background: #0d0d0d; color: #e0e0e0; min-height: 100vh; padding: 20px; max-width: 700px; margin: 0 auto; }
+  h1 { color: #00ff88; font-size: 1.5rem; letter-spacing: 0.1em; margin-bottom: 4px; }
+  nav { color: #555; font-size: 0.8rem; margin-bottom: 24px; }
+  nav a { color: #00ff88; text-decoration: none; }
+  .pick-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  button { font-family: 'Courier New', monospace; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: bold; transition: opacity 0.15s; }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-primary { background: #00ff88; color: #000; }
+  .btn-secondary { background: #2a2a2a; color: #e0e0e0; border: 1px solid #333; }
+  .btn-danger { background: #cc3333; color: #fff; }
+  .btn-warn { background: #cc8800; color: #fff; }
+  .file-info { background: #111; border: 1px solid #222; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; font-size: 0.82rem; line-height: 1.7; }
+  .file-info .fname { color: #00ff88; font-size: 0.95rem; }
+  .settings { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
+  .setting { display: flex; flex-direction: column; gap: 5px; }
+  .setting label { font-size: 0.72rem; color: #666; letter-spacing: 0.08em; }
+  .setting input, .setting select { background: #1a1a1a; color: #e0e0e0; border: 1px solid #333; padding: 7px 10px; border-radius: 5px; font-family: 'Courier New', monospace; font-size: 0.85rem; width: 110px; }
+  .status { font-size: 0.8rem; color: #ffaa00; min-height: 1.2em; margin-bottom: 12px; }
+  .action-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+  .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  #qrCanvas { border: 6px solid #fff; border-radius: 4px; display: block; max-width: 100%; background: #fff; }
+  .chunk-label { font-size: 0.9rem; color: #888; letter-spacing: 0.05em; }
+  .chunk-label span { color: #00ff88; font-weight: bold; }
+  .stats-bar { display: flex; gap: 24px; flex-wrap: wrap; background: #111; border: 1px solid #222; border-radius: 8px; padding: 14px 18px; width: 100%; }
+  .stat { display: flex; flex-direction: column; gap: 3px; }
+  .stat-val { font-size: 1.4rem; color: #00ff88; font-weight: bold; }
+  .stat-lbl { font-size: 0.68rem; color: #555; letter-spacing: 0.1em; }
+  .progress-bar { width: 100%; height: 6px; background: #222; border-radius: 3px; overflow: hidden; margin-top: 8px; }
+  .progress-fill { height: 100%; background: #00ff88; transition: width 0.3s; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<h1>QRL WEB — SENDER</h1>
+<nav><a href="index.html">← Home</a> &nbsp;|&nbsp; <a href="receiver.html">Open Receiver →</a></nav>
+
+<div class="pick-row">
+  <button class="btn-primary" onclick="document.getElementById('fileInput').click()">Select File</button>
+  <button class="btn-secondary" onclick="document.getElementById('folderInput').click()">Select Folder</button>
+</div>
+<input type="file" id="fileInput" class="hidden">
+<input type="file" id="folderInput" class="hidden" webkitdirectory multiple>
+
+<div id="fileInfo" class="file-info hidden"></div>
+
+<div class="settings">
+  <div class="setting">
+    <label>CHUNK SIZE (BYTES)</label>
+    <input type="number" id="chunkSize" value="600" min="100" max="1400" step="50">
+  </div>
+  <div class="setting">
+    <label>FPS</label>
+    <input type="number" id="fps" value="3" min="1" max="15" step="1">
+  </div>
+  <div class="setting">
+    <label>ERROR CORRECTION</label>
+    <select id="ecLevel">
+      <option value="L" selected>L — 7%</option>
+      <option value="M">M — 15%</option>
+      <option value="Q">Q — 25%</option>
+      <option value="H">H — 30%</option>
+    </select>
+  </div>
+  <div class="setting">
+    <label>QR SIZE (PX)</label>
+    <input type="number" id="qrSize" value="420" min="200" max="800" step="20">
+  </div>
+</div>
+
+<div class="status" id="statusMsg"></div>
+
+<div class="action-row hidden" id="actionRow">
+  <button class="btn-primary" id="startBtn" onclick="startTransfer()">Start Transfer</button>
+  <button class="btn-warn hidden" id="pauseBtn" onclick="togglePause()">Pause</button>
+  <button class="btn-danger hidden" id="stopBtn" onclick="stopTransfer()">Stop</button>
+</div>
+
+<div class="qr-wrap hidden" id="qrSection">
+  <canvas id="qrCanvas"></canvas>
+  <div class="chunk-label" id="chunkLabel">—</div>
+  <div class="stats-bar">
+    <div class="stat"><div class="stat-val" id="sFrame">—</div><div class="stat-lbl">FRAME</div></div>
+    <div class="stat"><div class="stat-val" id="sTotal">—</div><div class="stat-lbl">TOTAL CHUNKS</div></div>
+    <div class="stat"><div class="stat-val" id="sCycles">0</div><div class="stat-lbl">CYCLES</div></div>
+    <div class="stat"><div class="stat-val" id="sFps">—</div><div class="stat-lbl">ACTUAL FPS</div></div>
+  </div>
+  <div class="progress-bar" style="width:100%"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
+</div>
+
+<!-- CDN libraries -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script>
+'use strict';
+
+// ── Protocol ────────────────────────────────────────────────────────────────
+const HEADER_SIZE = 9;
+const MANIFEST_STREAM_ID = 255;
+
+function packHeader(streamId, sequence, totalChunks) {
+  const buf = new ArrayBuffer(9);
+  const v = new DataView(buf);
+  v.setUint8(0, streamId);
+  v.setUint32(1, sequence, false);   // big-endian
+  v.setUint32(5, totalChunks, false);
+  return new Uint8Array(buf);
+}
+
+function buildManifestChunk(manifest) {
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(manifest));
+  const hdr = packHeader(MANIFEST_STREAM_ID, 0, 1);
+  const out = new Uint8Array(hdr.length + jsonBytes.length);
+  out.set(hdr); out.set(jsonBytes, hdr.length);
+  return out;
+}
+
+function concat2(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a); out.set(b, a.length);
+  return out;
+}
+
+// qrcode library needs byte data as a Latin-1 string
+function toByteString(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return s;
+}
+
+// ── State ────────────────────────────────────────────────────────────────────
+let framedChunks = [];   // Uint8Array[] – each has 9-byte header prepended
+let manifestBytes = null;
+let currentIdx = 0;      // 0 = manifest, 1…N = data chunks
+let cycleCount = 0;
+let isPaused = false;
+let timerId = null;
+let lastFrameTs = 0;
+let frameCount = 0;
+let fpsAvg = 0;
+
+// ── File reading ─────────────────────────────────────────────────────────────
+document.getElementById('fileInput').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (f) await handleFile(f);
+  e.target.value = '';
+});
+
+document.getElementById('folderInput').addEventListener('change', async e => {
+  const files = Array.from(e.target.files);
+  if (files.length) await handleFolder(files);
+  e.target.value = '';
+});
+
+async function handleFile(file) {
+  setStatus('Reading…');
+  try {
+    const raw = new Uint8Array(await file.arrayBuffer());
+    await prepare(raw, file.name, false);
+  } catch (err) {
+    setStatus('Error reading file: ' + err.message);
+  }
+}
+
+async function handleFolder(files) {
+  setStatus('Packing folder into zip…');
+  try {
+    const zip = new JSZip();
+    const folderName = files[0].webkitRelativePath.split('/')[0];
+    for (const f of files) {
+      zip.file(f.webkitRelativePath, await f.arrayBuffer());
+    }
+    const zipData = await zip.generateAsync({ type: 'uint8array', compression: 'STORE' });
+    await prepare(zipData, folderName + '.zip', true);
+  } catch (err) {
+    setStatus('Error packing folder: ' + err.message);
+  }
+}
+
+async function prepare(raw, filename, isDirectory) {
+  setStatus('Compressing…');
+
+  const origSize = raw.length;
+  let data = raw;
+  let compressed = false;
+
+  if (raw.length >= 256) {
+    const comp = pako.gzip(raw, { level: 6 });
+    if (comp.length < raw.length * 0.95) {
+      data = comp;
+      compressed = true;
+    }
+  }
+
+  const chunkSize = Math.max(50, parseInt(document.getElementById('chunkSize').value) || 600);
+  const ec = document.getElementById('ecLevel').value;
+
+  // Split into raw chunks
+  const rawChunks = [];
+  for (let i = 0; i < data.length; i += chunkSize) {
+    rawChunks.push(data.slice(i, i + chunkSize));
+  }
+  const total = rawChunks.length;
+
+  // Frame each chunk with 9-byte header
+  framedChunks = rawChunks.map((c, i) => concat2(packHeader(0, i, total), c));
+
+  // Build manifest
+  const manifest = {
+    v: 1, filename, size: data.length, original_size: origSize,
+    compressed, is_directory: isDirectory,
+    num_streams: 1, total_chunks: total, chunk_size: chunkSize, error_correction: ec,
+  };
+  manifestBytes = buildManifestChunk(manifest);
+
+  // Show info
+  const ratio = compressed ? ` → ${fmtBytes(data.length)} gzip` : '';
+  document.getElementById('fileInfo').innerHTML =
+    `<div class="fname">${filename}</div>` +
+    `<div>${fmtBytes(origSize)}${ratio} &nbsp;·&nbsp; ${total} chunks × ${chunkSize} B</div>` +
+    `<div style="color:#555">Manifest: ${manifestBytes.length} B &nbsp;·&nbsp; EC: ${ec}</div>`;
+  document.getElementById('fileInfo').classList.remove('hidden');
+
+  document.getElementById('sTotal').textContent = total;
+  document.getElementById('actionRow').classList.remove('hidden');
+  document.getElementById('startBtn').textContent = 'Start Transfer';
+  setStatus('Ready — press Start Transfer.');
+}
+
+// ── Transfer display ─────────────────────────────────────────────────────────
+async function startTransfer() {
+  if (!framedChunks.length) return;
+  stopTransfer(false);
+
+  currentIdx = 0;
+  cycleCount = 0;
+  isPaused = false;
+  frameCount = 0;
+  fpsAvg = 0;
+  lastFrameTs = performance.now();
+
+  document.getElementById('startBtn').classList.add('hidden');
+  document.getElementById('pauseBtn').classList.remove('hidden');
+  document.getElementById('stopBtn').classList.remove('hidden');
+  document.getElementById('qrSection').classList.remove('hidden');
+  document.getElementById('sCycles').textContent = 0;
+  setStatus('Transmitting…');
+
+  const fps = Math.max(1, Math.min(15, parseInt(document.getElementById('fps').value) || 3));
+  const delay = Math.round(1000 / fps);
+
+  await renderFrame();
+  timerId = setInterval(tick, delay);
+}
+
+async function tick() {
+  if (isPaused) return;
+  await renderFrame();
+}
+
+async function renderFrame() {
+  const canvas = document.getElementById('qrCanvas');
+  const size = Math.max(100, parseInt(document.getElementById('qrSize').value) || 420);
+  const ec = document.getElementById('ecLevel').value;
+
+  const isManifest = (currentIdx === 0);
+  const data = isManifest ? manifestBytes : framedChunks[currentIdx - 1];
+  const label = isManifest ? 'MANIFEST' : `${currentIdx} / ${framedChunks.length}`;
+
+  try {
+    await QRCode.toCanvas(canvas, [{ data: toByteString(data), mode: 'byte' }], {
+      errorCorrectionLevel: ec,
+      margin: 3,
+      width: size,
+      color: { dark: '#000000', light: '#ffffff' }
+    });
+  } catch (err) {
+    setStatus('QR error: ' + err.message + ' — try reducing chunk size.');
+    stopTransfer(false);
+    return;
+  }
+
+  // FPS tracking
+  const now = performance.now();
+  const elapsed = now - lastFrameTs;
+  lastFrameTs = now;
+  frameCount++;
+  fpsAvg = frameCount < 5 ? fpsAvg : Math.round(10000 / elapsed) / 10;
+
+  // Update stats
+  document.getElementById('chunkLabel').innerHTML =
+    isManifest ? '<span>MANIFEST</span>' : `chunk <span>${label}</span>`;
+  document.getElementById('sFrame').textContent = isManifest ? 'M' : currentIdx;
+  document.getElementById('sCycles').textContent = cycleCount;
+  document.getElementById('sFps').textContent = frameCount < 3 ? '…' : fpsAvg;
+  const pct = isManifest ? 0 : Math.round((currentIdx / framedChunks.length) * 100);
+  document.getElementById('progFill').style.width = pct + '%';
+
+  // Advance index
+  currentIdx++;
+  if (currentIdx > framedChunks.length) {
+    currentIdx = 0;
+    cycleCount++;
+    document.getElementById('sCycles').textContent = cycleCount;
+  }
+}
+
+function togglePause() {
+  isPaused = !isPaused;
+  document.getElementById('pauseBtn').textContent = isPaused ? 'Resume' : 'Pause';
+  setStatus(isPaused ? 'Paused.' : 'Transmitting…');
+}
+
+function stopTransfer(resetUI = true) {
+  if (timerId) { clearInterval(timerId); timerId = null; }
+  isPaused = false;
+  if (resetUI) {
+    document.getElementById('startBtn').textContent = 'Restart Transfer';
+    document.getElementById('startBtn').classList.remove('hidden');
+    document.getElementById('pauseBtn').classList.add('hidden');
+    document.getElementById('stopBtn').classList.add('hidden');
+    setStatus('Stopped.');
+  }
+}
+
+// ── Utilities ────────────────────────────────────────────────────────────────
+function setStatus(msg) { document.getElementById('statusMsg').textContent = msg; }
+
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(2) + ' MB';
+}
+</script>
+</body>
+</html>

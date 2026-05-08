@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QRL Web — Receiver</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Courier New', monospace; background: #0d0d0d; color: #e0e0e0; min-height: 100vh; padding: 20px; max-width: 700px; margin: 0 auto; }
+  h1 { color: #00ff88; font-size: 1.5rem; letter-spacing: 0.1em; margin-bottom: 4px; }
+  nav { color: #555; font-size: 0.8rem; margin-bottom: 24px; }
+  nav a { color: #00ff88; text-decoration: none; }
+  button { font-family: 'Courier New', monospace; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: bold; transition: opacity 0.15s; }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-primary { background: #00ff88; color: #000; }
+  .btn-secondary { background: #2a2a2a; color: #e0e0e0; border: 1px solid #333; }
+  .btn-danger { background: #cc3333; color: #fff; }
+  .btn-green { background: #00aa55; color: #fff; }
+  .action-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+  .status { font-size: 0.82rem; min-height: 1.2em; margin-bottom: 12px; padding: 8px 12px; border-radius: 5px; border: 1px solid #222; background: #111; }
+  .status.ok { border-color: #00ff88; color: #00ff88; }
+  .status.warn { border-color: #ffaa00; color: #ffaa00; }
+  .status.err { border-color: #cc3333; color: #cc3333; }
+  .status.idle { color: #555; }
+  .video-wrap { position: relative; margin-bottom: 16px; border-radius: 8px; overflow: hidden; background: #000; border: 2px solid #222; }
+  #video { width: 100%; display: block; max-height: 50vh; object-fit: cover; }
+  .scan-overlay { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); border-radius: 5px; padding: 4px 10px; font-size: 0.75rem; }
+  .scan-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #555; margin-right: 6px; transition: background 0.1s; }
+  .scan-dot.active { background: #00ff88; }
+  .manifest-card { background: #111; border: 1px solid #222; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; font-size: 0.82rem; line-height: 1.8; }
+  .manifest-card .fname { color: #00ff88; font-size: 0.95rem; }
+  .progress-section { margin-bottom: 16px; }
+  .prog-numbers { display: flex; justify-content: space-between; font-size: 0.78rem; color: #666; margin-bottom: 6px; }
+  .prog-numbers span { color: #00ff88; }
+  .progress-bar { width: 100%; height: 10px; background: #1a1a1a; border-radius: 5px; overflow: hidden; }
+  .progress-fill { height: 100%; background: #00ff88; transition: width 0.2s; border-radius: 5px; }
+  .stats-row { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 16px; }
+  .stat { display: flex; flex-direction: column; gap: 3px; }
+  .stat-val { font-size: 1.3rem; color: #00ff88; font-weight: bold; }
+  .stat-lbl { font-size: 0.68rem; color: #555; letter-spacing: 0.1em; }
+  .camera-select { background: #1a1a1a; color: #e0e0e0; border: 1px solid #333; padding: 7px 10px; border-radius: 5px; font-family: 'Courier New', monospace; font-size: 0.8rem; margin-bottom: 12px; width: 100%; }
+  .hidden { display: none !important; }
+  .blink { animation: blink 0.15s; }
+  @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.1 } }
+  .download-btn { margin-top: 8px; }
+</style>
+</head>
+<body>
+<h1>QRL WEB — RECEIVER</h1>
+<nav><a href="index.html">← Home</a> &nbsp;|&nbsp; <a href="sender.html">Open Sender →</a></nav>
+
+<select id="cameraSelect" class="camera-select hidden"></select>
+
+<div class="action-row">
+  <button class="btn-primary" id="startBtn" onclick="startCamera()">Start Camera</button>
+  <button class="btn-danger hidden" id="stopBtn" onclick="stopCamera()">Stop</button>
+  <button class="btn-secondary hidden" id="resetBtn" onclick="resetState()">Reset / New Transfer</button>
+</div>
+
+<div class="status idle" id="statusMsg">Press Start Camera to begin scanning.</div>
+
+<div class="video-wrap hidden" id="videoWrap">
+  <video id="video" autoplay playsinline muted></video>
+  <canvas id="capCanvas" class="hidden"></canvas>
+  <div class="scan-overlay">
+    <span class="scan-dot" id="scanDot"></span><span id="scanTxt">waiting…</span>
+  </div>
+</div>
+
+<div class="manifest-card hidden" id="manifestCard"></div>
+
+<div class="progress-section hidden" id="progressSection">
+  <div class="prog-numbers">
+    <span>Chunks received: <span id="pReceived">0</span> / <span id="pTotal">?</span></span>
+    <span id="pPct">0%</span>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
+</div>
+
+<div class="stats-row hidden" id="statsRow">
+  <div class="stat"><div class="stat-val" id="sScans">0</div><div class="stat-lbl">FRAMES SCANNED</div></div>
+  <div class="stat"><div class="stat-val" id="sHits">0</div><div class="stat-lbl">QR HITS</div></div>
+  <div class="stat"><div class="stat-val" id="sNew">0</div><div class="stat-lbl">NEW CHUNKS</div></div>
+  <div class="stat"><div class="stat-val" id="sDups">0</div><div class="stat-lbl">DUPLICATES</div></div>
+</div>
+
+<button class="btn-green download-btn hidden" id="downloadBtn" onclick="downloadFile()">Download File</button>
+
+<!-- CDN libraries -->
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+<script>
+'use strict';
+
+// ── Protocol ────────────────────────────────────────────────────────────────
+const HEADER_SIZE = 9;
+const MANIFEST_STREAM_ID = 255;
+
+function unpackChunk(bytes) {
+  if (bytes.length < HEADER_SIZE) return null;
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
+  return {
+    streamId:    v.getUint8(0),
+    sequence:    v.getUint32(1, false),
+    totalChunks: v.getUint32(5, false),
+    payload:     bytes.slice(HEADER_SIZE),
+  };
+}
+
+// ── Decoder state ────────────────────────────────────────────────────────────
+let manifest = null;
+let received = new Map();   // sequence → Uint8Array payload
+let expectedTotal = 0;
+let complete = false;
+let assembledData = null;   // final Uint8Array after reassembly
+
+// Scan stats
+let frameCount = 0;
+let hitCount = 0;
+let newCount = 0;
+let dupCount = 0;
+
+// Camera
+let mediaStream = null;
+let rafId = null;
+let scanning = false;
+
+// ── Camera setup ─────────────────────────────────────────────────────────────
+async function startCamera() {
+  try {
+    // Enumerate cameras first
+    await populateCameraSelect();
+
+    const deviceId = document.getElementById('cameraSelect').value;
+    const constraints = {
+      video: deviceId
+        ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        : { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+    };
+
+    mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    const video = document.getElementById('video');
+    video.srcObject = mediaStream;
+    await new Promise(res => { video.onloadedmetadata = res; });
+    video.play();
+
+    document.getElementById('videoWrap').classList.remove('hidden');
+    document.getElementById('statsRow').classList.remove('hidden');
+    document.getElementById('progressSection').classList.remove('hidden');
+    document.getElementById('startBtn').classList.add('hidden');
+    document.getElementById('stopBtn').classList.remove('hidden');
+    document.getElementById('resetBtn').classList.remove('hidden');
+
+    scanning = true;
+    setStatus('Scanning… point camera at QRL sender.', 'warn');
+    rafId = requestAnimationFrame(scanLoop);
+  } catch (err) {
+    setStatus('Camera error: ' + err.message, 'err');
+  }
+}
+
+async function populateCameraSelect() {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const cameras = devices.filter(d => d.kind === 'videoinput');
+  const sel = document.getElementById('cameraSelect');
+  sel.innerHTML = '';
+  cameras.forEach((cam, i) => {
+    const opt = document.createElement('option');
+    opt.value = cam.deviceId;
+    opt.textContent = cam.label || `Camera ${i + 1}`;
+    sel.appendChild(opt);
+  });
+  if (cameras.length > 1) sel.classList.remove('hidden');
+}
+
+function stopCamera() {
+  scanning = false;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  document.getElementById('video').srcObject = null;
+  document.getElementById('videoWrap').classList.add('hidden');
+  document.getElementById('startBtn').classList.remove('hidden');
+  document.getElementById('stopBtn').classList.add('hidden');
+  if (!complete) setStatus('Camera stopped.', 'idle');
+}
+
+// ── Scan loop ────────────────────────────────────────────────────────────────
+function scanLoop() {
+  if (!scanning) return;
+
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('capCanvas');
+
+  if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    frameCount++;
+    document.getElementById('sScans').textContent = frameCount;
+
+    const code = jsQR(imgData.data, imgData.width, imgData.height, {
+      inversionAttempts: 'attemptBoth',
+    });
+
+    const dot = document.getElementById('scanDot');
+    if (code && code.binaryData && code.binaryData.length >= HEADER_SIZE) {
+      hitCount++;
+      document.getElementById('sHits').textContent = hitCount;
+      dot.classList.add('active');
+      document.getElementById('scanTxt').textContent = 'QR found';
+      processChunk(new Uint8Array(code.binaryData));
+    } else {
+      dot.classList.remove('active');
+      document.getElementById('scanTxt').textContent = 'scanning…';
+    }
+  }
+
+  rafId = requestAnimationFrame(scanLoop);
+}
+
+// ── Chunk processing ─────────────────────────────────────────────────────────
+function processChunk(bytes) {
+  const chunk = unpackChunk(bytes);
+  if (!chunk) return;
+
+  if (chunk.streamId === MANIFEST_STREAM_ID) {
+    if (!manifest) {
+      try {
+        manifest = JSON.parse(new TextDecoder().decode(chunk.payload));
+        expectedTotal = manifest.total_chunks;
+        showManifest(manifest);
+        updateProgress();
+      } catch (_) {}
+    }
+    return;
+  }
+
+  if (chunk.streamId !== 0) return;  // only single-stream supported
+
+  // Learn total from chunk header even without manifest
+  if (!expectedTotal && chunk.totalChunks > 0) {
+    expectedTotal = chunk.totalChunks;
+  }
+
+  if (received.has(chunk.sequence)) {
+    dupCount++;
+    document.getElementById('sDups').textContent = dupCount;
+    return;
+  }
+
+  received.set(chunk.sequence, chunk.payload);
+  newCount++;
+  document.getElementById('sNew').textContent = newCount;
+  updateProgress();
+
+  if (expectedTotal > 0 && received.size === expectedTotal) {
+    finalise();
+  }
+}
+
+// ── Reassembly ───────────────────────────────────────────────────────────────
+function finalise() {
+  complete = true;
+  scanning = false;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  document.getElementById('video').srcObject = null;
+
+  // Sort sequences 0…N-1 and concatenate payloads
+  const totalBytes = Array.from(received.values()).reduce((s, b) => s + b.length, 0);
+  const combined = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (let i = 0; i < expectedTotal; i++) {
+    const part = received.get(i);
+    if (!part) { setStatus(`Missing chunk ${i} — transfer incomplete.`, 'err'); return; }
+    combined.set(part, offset);
+    offset += part.length;
+  }
+
+  let data = combined;
+  if (manifest?.compressed) {
+    try { data = pako.ungzip(combined); }
+    catch (e) { setStatus('Decompression failed: ' + e.message, 'err'); return; }
+  }
+
+  assembledData = data;
+
+  document.getElementById('videoWrap').classList.add('hidden');
+  document.getElementById('stopBtn').classList.add('hidden');
+  document.getElementById('downloadBtn').classList.remove('hidden');
+  setStatus(`✓ Transfer complete! ${fmtBytes(data.length)} ready.`, 'ok');
+
+  // Auto-download
+  downloadFile();
+}
+
+function downloadFile() {
+  if (!assembledData) return;
+  const filename = manifest?.filename || 'received_file';
+  const blob = new Blob([assembledData]);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function showManifest(m) {
+  const card = document.getElementById('manifestCard');
+  const comp = m.compressed ? ` (gzip → ${fmtBytes(m.size)})` : '';
+  card.innerHTML =
+    `<div class="fname">${m.filename}</div>` +
+    `<div>${fmtBytes(m.original_size)}${comp} &nbsp;·&nbsp; ${m.total_chunks} chunks × ${m.chunk_size} B</div>` +
+    `<div style="color:#555">EC: ${m.error_correction} &nbsp;·&nbsp; ${m.is_directory ? 'folder (zip)' : 'file'}</div>`;
+  card.classList.remove('hidden');
+}
+
+function updateProgress() {
+  const n = received.size;
+  const tot = expectedTotal || '?';
+  const pct = expectedTotal ? Math.floor((n / expectedTotal) * 100) : 0;
+  document.getElementById('pReceived').textContent = n;
+  document.getElementById('pTotal').textContent = tot;
+  document.getElementById('pPct').textContent = pct + '%';
+  document.getElementById('progFill').style.width = pct + '%';
+}
+
+function setStatus(msg, cls = 'idle') {
+  const el = document.getElementById('statusMsg');
+  el.textContent = msg;
+  el.className = 'status ' + cls;
+}
+
+function resetState() {
+  stopCamera();
+  manifest = null;
+  received = new Map();
+  expectedTotal = 0;
+  complete = false;
+  assembledData = null;
+  frameCount = hitCount = newCount = dupCount = 0;
+  ['sScans','sHits','sNew','sDups'].forEach(id => document.getElementById(id).textContent = '0');
+  document.getElementById('manifestCard').classList.add('hidden');
+  document.getElementById('downloadBtn').classList.add('hidden');
+  document.getElementById('progressSection').classList.add('hidden');
+  document.getElementById('statsRow').classList.add('hidden');
+  updateProgress();
+  setStatus('Reset. Press Start Camera to begin again.', 'idle');
+  document.getElementById('startBtn').classList.remove('hidden');
+  document.getElementById('stopBtn').classList.add('hidden');
+}
+
+function fmtBytes(n) {
+  if (!n) return '0 B';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(2) + ' MB';
+}
+</script>
+</body>
+</html>
