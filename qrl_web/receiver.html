@@ -43,6 +43,14 @@
   .blink { animation: blink 0.15s; }
   @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.1 } }
   .download-btn { margin-top: 8px; }
+  .chunk-map { margin-bottom: 16px; }
+  .chunk-map-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .chunk-map-lbl { font-size: 0.72rem; color: #555; letter-spacing: 0.1em; }
+  .chunk-grid { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 8px; }
+  .chunk-cell { width: 10px; height: 10px; border-radius: 2px; background: #1a1a1a; flex-shrink: 0; }
+  .chunk-cell.ok { background: #00ff88; }
+  .chunk-cell.partial { background: #cc8800; }
+  .missing-list { font-size: 0.72rem; color: #666; word-break: break-all; max-height: 54px; overflow-y: auto; line-height: 1.6; }
 </style>
 </head>
 <body>
@@ -75,6 +83,15 @@
     <span id="pPct">0%</span>
   </div>
   <div class="progress-bar"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
+</div>
+
+<div class="chunk-map hidden" id="chunkMap">
+  <div class="chunk-map-header">
+    <span class="chunk-map-lbl">CHUNK MAP</span>
+    <button class="btn-secondary" style="padding:4px 10px;font-size:0.75rem" onclick="copyMissing()">Copy Missing</button>
+  </div>
+  <div id="chunkGrid" class="chunk-grid"></div>
+  <div id="missingList" class="missing-list"></div>
 </div>
 
 <div class="stats-row hidden" id="statsRow">
@@ -160,14 +177,16 @@ async function startCamera() {
 }
 
 async function populateCameraSelect() {
+  const sel = document.getElementById('cameraSelect');
+  const prevId = sel.value;
   const devices = await navigator.mediaDevices.enumerateDevices();
   const cameras = devices.filter(d => d.kind === 'videoinput');
-  const sel = document.getElementById('cameraSelect');
   sel.innerHTML = '';
   cameras.forEach((cam, i) => {
     const opt = document.createElement('option');
     opt.value = cam.deviceId;
     opt.textContent = cam.label || `Camera ${i + 1}`;
+    if (cam.deviceId === prevId) opt.selected = true;
     sel.appendChild(opt);
   });
   if (cameras.length > 1) sel.classList.remove('hidden');
@@ -182,6 +201,26 @@ function stopCamera() {
   document.getElementById('startBtn').classList.remove('hidden');
   document.getElementById('stopBtn').classList.add('hidden');
   if (!complete) setStatus('Camera stopped.', 'idle');
+}
+
+async function switchCamera(deviceId) {
+  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  const video = document.getElementById('video');
+  video.srcObject = null;
+  const constraints = {
+    video: deviceId
+      ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+      : { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+  };
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = mediaStream;
+    await new Promise(res => { video.onloadedmetadata = res; });
+    video.play();
+    setStatus('Camera switched. Scanning…', 'warn');
+  } catch (err) {
+    setStatus('Camera switch error: ' + err.message, 'err');
+  }
 }
 
 // ── Scan loop ────────────────────────────────────────────────────────────────
@@ -290,6 +329,7 @@ function finalise() {
 
   document.getElementById('videoWrap').classList.add('hidden');
   document.getElementById('stopBtn').classList.add('hidden');
+  document.getElementById('chunkMap').classList.add('hidden');
   document.getElementById('downloadBtn').classList.remove('hidden');
   setStatus(`✓ Transfer complete! ${fmtBytes(data.length)} ready.`, 'ok');
 
@@ -328,6 +368,50 @@ function updateProgress() {
   document.getElementById('pTotal').textContent = tot;
   document.getElementById('pPct').textContent = pct + '%';
   document.getElementById('progFill').style.width = pct + '%';
+  updateChunkMap();
+}
+
+function updateChunkMap() {
+  if (!expectedTotal) return;
+  const mapEl = document.getElementById('chunkMap');
+  if (complete) { mapEl.classList.add('hidden'); return; }
+  mapEl.classList.remove('hidden');
+
+  const MAX_CELLS = 200;
+  const cellSize = Math.ceil(expectedTotal / MAX_CELLS);
+  const numCells = Math.ceil(expectedTotal / cellSize);
+  const grid = document.getElementById('chunkGrid');
+  grid.innerHTML = '';
+  for (let i = 0; i < numCells; i++) {
+    const start = i * cellSize;
+    const end = Math.min(start + cellSize, expectedTotal);
+    let recvd = 0;
+    for (let j = start; j < end; j++) { if (received.has(j)) recvd++; }
+    const cell = document.createElement('div');
+    const full = recvd === end - start;
+    cell.className = 'chunk-cell' + (full ? ' ok' : recvd > 0 ? ' partial' : '');
+    grid.appendChild(cell);
+  }
+
+  const missing = [];
+  for (let i = 0; i < expectedTotal; i++) { if (!received.has(i)) missing.push(i); }
+  const listEl = document.getElementById('missingList');
+  if (missing.length === 0) {
+    listEl.textContent = '';
+  } else if (missing.length <= 100) {
+    listEl.textContent = 'Missing: ' + missing.join(', ');
+  } else {
+    listEl.textContent = `Missing ${missing.length}: ${missing.slice(0, 80).join(', ')} … +${missing.length - 80} more`;
+  }
+}
+
+function copyMissing() {
+  const missing = [];
+  for (let i = 0; i < expectedTotal; i++) { if (!received.has(i)) missing.push(i); }
+  if (!missing.length) { setStatus('No missing chunks!', 'ok'); return; }
+  navigator.clipboard.writeText(missing.join(','))
+    .then(() => setStatus(`Copied ${missing.length} missing chunk number(s) to clipboard.`, 'ok'))
+    .catch(() => setStatus('Clipboard copy failed — copy the list manually.', 'warn'));
 }
 
 function setStatus(msg, cls = 'idle') {
@@ -348,6 +432,7 @@ function resetState() {
   document.getElementById('manifestCard').classList.add('hidden');
   document.getElementById('downloadBtn').classList.add('hidden');
   document.getElementById('progressSection').classList.add('hidden');
+  document.getElementById('chunkMap').classList.add('hidden');
   document.getElementById('statsRow').classList.add('hidden');
   updateProgress();
   setStatus('Reset. Press Start Camera to begin again.', 'idle');
@@ -361,6 +446,10 @@ function fmtBytes(n) {
   if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
   return (n / 1048576).toFixed(2) + ' MB';
 }
+
+document.getElementById('cameraSelect').addEventListener('change', function() {
+  if (mediaStream) switchCamera(this.value);
+});
 </script>
 </body>
 </html>
