@@ -276,6 +276,9 @@ async function startTransfer() {
   const delay = Math.round(1000 / fps);
 
   await renderFrame();
+  isPaused = true;
+  document.getElementById('pauseBtn').textContent = 'Resume';
+  setStatus('Paused on manifest — press Resume when receiver is ready.');
   timerId = setInterval(tick, delay);
 }
 
@@ -353,9 +356,9 @@ function startReplay() {
   const input = document.getElementById('missingInput').value.trim();
   if (!input) { setStatus('Enter chunk numbers to replay.'); return; }
   const indices = [...new Set(
-    input.split(/[\s,]+/).map(Number).filter(n => Number.isInteger(n) && n >= 0 && n < framedChunks.length)
-  )].sort((a, b) => a - b);
-  if (!indices.length) { setStatus('No valid chunk numbers — use 0-based indices from receiver.'); return; }
+    input.split(/[\s,]+/).map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= framedChunks.length)
+  )].map(n => n - 1).sort((a, b) => a - b);
+  if (!indices.length) { setStatus('No valid chunk numbers — enter 1-based chunk numbers from receiver.'); return; }
 
   stopTransfer(false);
   replayChunks = indices;

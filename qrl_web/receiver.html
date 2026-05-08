@@ -394,7 +394,7 @@ function updateChunkMap() {
   }
 
   const missing = [];
-  for (let i = 0; i < expectedTotal; i++) { if (!received.has(i)) missing.push(i); }
+  for (let i = 0; i < expectedTotal; i++) { if (!received.has(i)) missing.push(i + 1); }
   const listEl = document.getElementById('missingList');
   if (missing.length === 0) {
     listEl.textContent = '';
@@ -407,7 +407,7 @@ function updateChunkMap() {
 
 function copyMissing() {
   const missing = [];
-  for (let i = 0; i < expectedTotal; i++) { if (!received.has(i)) missing.push(i); }
+  for (let i = 0; i < expectedTotal; i++) { if (!received.has(i)) missing.push(i + 1); }
   if (!missing.length) { setStatus('No missing chunks!', 'ok'); return; }
   navigator.clipboard.writeText(missing.join(','))
     .then(() => setStatus(`Copied ${missing.length} missing chunk number(s) to clipboard.`, 'ok'))
