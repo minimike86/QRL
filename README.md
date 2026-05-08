@@ -6,7 +6,31 @@ No network connection, no clipboard, and no agent is needed on the receiving end
 
 ---
 
-## Quick start
+## Web version (no install)
+
+`qrl_web/` is a browser-only implementation — no Python, no install, no build step.
+
+**Hosted on GitHub Pages:**
+- Sender: https://minimike86.github.io/QRL/qrl_web/sender.html
+- Receiver: https://minimike86.github.io/QRL/qrl_web/receiver.html
+
+**Or serve locally:**
+```bash
+cd qrl_web
+python -m http.server 8765
+# open http://localhost:8765
+```
+
+| Page | What it does |
+|------|-------------|
+| `sender.html` | Pick a file or folder → compress → chunk → display QR loop |
+| `receiver.html` | Webcam scans the sender's screen → reassemble → auto-download |
+
+Folders are packed as `.zip` (extracted from the download on arrival). Works best for files under ~500 KB. The receiver requires HTTPS or localhost for camera access — GitHub Pages satisfies this automatically.
+
+---
+
+## Quick start (Python)
 
 **Combined GUI — send and receive in one window:**
 ```bash
@@ -43,8 +67,10 @@ See [docs/architecture.md](docs/architecture.md) for the full wire format and da
 
 | Area | Feature |
 |------|---------|
+| **Web** | Browser-only sender + receiver — no install, no Python |
+| **Web** | Hosted on GitHub Pages (HTTPS, camera works out of the box) |
 | Encoding | Auto gzip compression (skipped if it doesn't help) |
-| Encoding | Folder support — tar-packed, auto-extracted on arrival |
+| Encoding | Folder support — tar-packed (Python) or zip (web), auto-extracted on arrival |
 | Display | Configurable FPS (2 / 10 / 20 / 30) and QR quality presets |
 | Display | Parallel grid mode — 4, 9, 16, or auto-fit streams for multiplied throughput |
 | Display | Background prefetch with a bounded LRU cache |
@@ -61,6 +87,7 @@ See [docs/architecture.md](docs/architecture.md) for the full wire format and da
 
 | File | Contents |
 |------|---------|
+| [qrl_web/](qrl_web/) | Browser sender + receiver (GitHub Pages / localhost) |
 | [docs/architecture.md](docs/architecture.md) | Wire format, data flow, compression, LRU cache, manifest |
 | [docs/server.md](docs/server.md) | All server settings, speed/quality/density/mode presets, export |
 | [docs/client.md](docs/client.md) | All client settings, region picker, monitor selection, progress |
