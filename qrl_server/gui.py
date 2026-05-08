@@ -1057,9 +1057,22 @@ class QRLServerGUI:
             messagebox.showerror("Configuration error", str(e))
             return
 
+        # Compute the auto-grid NOW on the main thread — _auto_grid_for_current_monitor
+        # calls Tk widget methods (winfo_x, update_idletasks) which are NOT safe to
+        # call from a background thread.
+        if self.config.qr_grid_auto:
+            cols, rows = self._auto_grid_for_current_monitor()
+            self._grid_cols, self._grid_rows = cols, rows
+            self._mode_streams = cols * rows
+            self.use_parallel_encoding = self._mode_streams > 1
+            self._log(
+                f">> Auto-grid: {cols}x{rows} = {cols*rows} parallel streams"
+                f" ({self._last_auto_monitor_label})"
+            )
+
         self.is_encoding = True
         set_status(self.status_label, "running", "Encoding")
-        self._update_status("Encoding…")
+        self._update_status("Encoding...")
         self._update_button_states()
         self.encoding_thread = threading.Thread(target=self._encode_worker, daemon=True)
         self.encoding_thread.start()
@@ -1075,7 +1088,7 @@ class QRLServerGUI:
             file_size = getattr(self, "_current_size_bytes", 0) or src_path.stat().st_size
             kind = "folder" if is_dir else "file"
             self._log_main(
-                f"▸ Encoding {kind}: {src_path.name}  ({file_size:,} bytes / {file_size/1024/1024:.2f} MB)"
+                f">> Encoding {kind}: {src_path.name}  ({file_size:,} bytes / {file_size/1024/1024:.2f} MB)"
             )
             if file_size == 0:
                 raise ValueError(f"{kind.title()} is empty")
@@ -1084,14 +1097,7 @@ class QRLServerGUI:
                     f"{kind.title()} ({file_size/1024/1024:.1f} MB) exceeds max ({self.config.max_file_size/1024/1024:.1f} MB)"
                 )
             if is_dir:
-                self._log_main("  ↳ Packing as tar archive (auto-extracted on the client)")
-
-            if self.config.qr_grid_auto:
-                cols, rows = self._auto_grid_for_current_monitor()
-                self._grid_cols, self._grid_rows = cols, rows
-                self._mode_streams = cols * rows
-                self.use_parallel_encoding = self._mode_streams > 1
-                self._log_main(f"▸ Auto-grid: {cols}×{rows} = {cols*rows} parallel streams")
+                self._log_main("  -> Packing as tar archive (auto-extracted on the client)")
 
             # Reset caches — bounded LRU so very large files (tens of
             # thousands of chunks) don't blow memory.
@@ -1102,8 +1108,8 @@ class QRLServerGUI:
             if self.use_parallel_encoding:
                 streams = self._mode_streams
                 self._log_main(
-                    f"▸ Splitting across {streams} parallel streams "
-                    f"(chunk size {self.config.chunk_size} B)…"
+                    f">> Splitting across {streams} parallel streams "
+                    f"(chunk size {self.config.chunk_size} B)..."
                 )
                 self.parallel_encoder = ParallelQREncoder(
                     self.current_file,
@@ -1120,21 +1126,25 @@ class QRLServerGUI:
                     self.config.duration
                 )
                 total_qrs = self.total_chunks * streams
+                self._log_main(
+                    f"  {self.total_chunks:,} chunks/stream, "
+                    f"{total_qrs:,} QR codes total ({streams} streams)"
+                )
                 if self.parallel_encoder._compressed:
                     ratio = self.parallel_encoder._original_size / max(len(self.parallel_encoder._data), 1)
                     self._log_main(
-                        f"  Compressed {self.parallel_encoder._original_size:,} → "
-                        f"{len(self.parallel_encoder._data):,} bytes ({ratio:.1f}× speedup over the wire)"
+                        f"  Compressed {self.parallel_encoder._original_size:,} -> "
+                        f"{len(self.parallel_encoder._data):,} bytes ({ratio:.1f}x speedup over the wire)"
                     )
                 else:
-                    self._log_main("  Skipping compression (data doesn't shrink — already compressed)")
+                    self._log_main("  Skipping compression (data doesn't shrink - already compressed)")
                 self._log_main(
-                    f"  {self.total_chunks:,} chunks/stream  ·  "
-                    f"{total_qrs:,} QR images total  ·  "
+                    f"  {self.total_chunks:,} chunks/stream | "
+                    f"{total_qrs:,} QR images total | "
                     f"~{stats.get('kilobytes_per_second', 0):.1f} KB/s theoretical"
                 )
             else:
-                self._log_main(f"▸ Splitting file (chunk size {self.config.chunk_size} B)…")
+                self._log_main(f">> Splitting file (chunk size {self.config.chunk_size} B)...")
                 self.encoder = QRLEncoder(
                     self.current_file,
                     chunk_size=self.config.chunk_size,
@@ -1147,24 +1157,33 @@ class QRLServerGUI:
                 if self.encoder._compressed:
                     ratio = self.encoder._original_size / max(len(self.encoder._data), 1)
                     self._log_main(
-                        f"  Compressed {self.encoder._original_size:,} → "
-                        f"{len(self.encoder._data):,} bytes ({ratio:.1f}× speedup over the wire)"
+                        f"  Compressed {self.encoder._original_size:,} -> "
+                        f"{len(self.encoder._data):,} bytes ({ratio:.1f}x speedup over the wire)"
                     )
                 else:
-                    self._log_main("  Skipping compression (data doesn't shrink — already compressed)")
+                    self._log_main("  Skipping compression (data doesn't shrink - already compressed)")
                 self._log_main(f"  {self.total_chunks:,} chunks ready")
 
-            self._log_main("▸ Ready to display — QRs generate in background while you watch")
+            self._log_main(">> Ready to display - QRs generate in background while you watch")
             # Kick off non-blocking background prefetch so the display loop
             # can read pre-rendered frames from the cache instead of generating
             # them inline (which would stall display when grids are large).
             self._start_background_prefetch()
-            self.root.after(0, self._encoding_complete)
+            try:
+                self.root.after(0, self._encoding_complete)
+            except (tk.TclError, RuntimeError):
+                pass
         except Exception as e:
-            self.root.after(0, lambda err=str(e): self._encoding_error(err))
+            try:
+                self.root.after(0, lambda err=str(e): self._encoding_error(err))
+            except (tk.TclError, RuntimeError):
+                pass
         finally:
             self.is_encoding = False
-            self.root.after(0, self._update_button_states)
+            try:
+                self.root.after(0, self._update_button_states)
+            except (tk.TclError, RuntimeError):
+                pass
 
     def _start_background_prefetch(self) -> None:
         """Background QR prefetch.
@@ -1185,12 +1204,6 @@ class QRLServerGUI:
         # is slower than display rate.
         LOOKAHEAD = 256
 
-        def _root_alive() -> bool:
-            try:
-                return bool(self.root.winfo_exists())
-            except (tk.TclError, RuntimeError, AttributeError):
-                return False
-
         def _display_position() -> int:
             return self.current_qr_index if self.is_displaying else 0
 
@@ -1203,13 +1216,13 @@ class QRLServerGUI:
                     bounded = total > QR_CACHE_MAX
                     last_decile = -1
                     for i in range(total):
-                        if gen != self._prefetch_gen or not _root_alive():
+                        if gen != self._prefetch_gen:
                             return
                         # Stay within LOOKAHEAD of the display position when
                         # the file exceeds the cache — otherwise the LRU
                         # would just evict our work before display sees it.
                         while bounded and (i - _display_position()) > LOOKAHEAD:
-                            if gen != self._prefetch_gen or not _root_alive():
+                            if gen != self._prefetch_gen:
                                 return
                             time.sleep(0.05)
                         if i not in self._qr_set_cache:
@@ -1218,20 +1231,20 @@ class QRLServerGUI:
                         if decile > last_decile and decile < 10:
                             last_decile = decile
                             self._log_main(
-                                f"  …generated {decile*10}% ({i+1}/{total} sets, {streams * (i+1):,} QRs)"
+                                f"  ...generated {decile*10}% ({i+1}/{total} sets, {streams * (i+1):,} QRs)"
                             )
                     elapsed = time.time() - t0
                     msg = "Cache full" if not bounded else "All QRs generated"
-                    self._log_main(f"  ✓ {msg}: {total * streams:,} QRs in {elapsed:.1f}s")
+                    self._log_main(f"  [done] {msg}: {total * streams:,} QRs in {elapsed:.1f}s")
                 elif self.encoder is not None:
                     total = self.total_chunks
                     bounded = total > QR_CACHE_MAX
                     last_decile = -1
                     for i in range(total):
-                        if gen != self._prefetch_gen or not _root_alive():
+                        if gen != self._prefetch_gen:
                             return
                         while bounded and (i - _display_position()) > LOOKAHEAD:
-                            if gen != self._prefetch_gen or not _root_alive():
+                            if gen != self._prefetch_gen:
                                 return
                             time.sleep(0.05)
                         if i not in self._qr_cache:
@@ -1239,12 +1252,12 @@ class QRLServerGUI:
                         decile = (i + 1) * 10 // max(total, 1)
                         if decile > last_decile and decile < 10:
                             last_decile = decile
-                            self._log_main(f"  …generated {decile*10}% ({i+1}/{total} QRs)")
+                            self._log_main(f"  ...generated {decile*10}% ({i+1}/{total} QRs)")
                     elapsed = time.time() - t0
                     msg = "Cache full" if not bounded else "All QRs generated"
-                    self._log_main(f"  ✓ {msg}: {total:,} QRs in {elapsed:.1f}s")
+                    self._log_main(f"  [done] {msg}: {total:,} QRs in {elapsed:.1f}s")
             except Exception as e:
-                self._log_main(f"  ✗ Background generation error: {e}")
+                self._log_main(f"  [ERROR] Background generation error: {e}")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1259,8 +1272,13 @@ class QRLServerGUI:
         Silently no-ops if the root has been destroyed — important for
         background threads that may outlive the GUI (e.g. prefetch workers
         that finish after the user closes the window or a test tears down)."""
+        def _safe_log():
+            try:
+                self._log(msg)
+            except Exception:
+                pass
         try:
-            self.root.after(0, lambda: self._log(msg))
+            self.root.after(0, _safe_log)
         except (tk.TclError, RuntimeError):
             pass
 
@@ -1497,7 +1515,10 @@ class QRLServerGUI:
             if self.is_displaying:
                 self.root.after(max(int(self.config.duration * 1000), 1), self._show_next_qr)
         except Exception as e:
-            self._log(f"Display error: {e}")
+            try:
+                self._log(f"Display error: {e}")
+            except Exception:
+                pass
             self.is_displaying = False
             self._update_button_states()
             set_status(self.status_label, "error", "Display error")
@@ -1691,12 +1712,18 @@ class QRLServerGUI:
             )
             elapsed = time.time() - t0
             self._log_main(f"  ✓ Wrote {len(frames)} pages in {elapsed:.2f}s")
-            self.root.after(
-                0, lambda: messagebox.showinfo("PDF saved", f"{len(frames)} pages → {out_path}")
-            )
+            try:
+                self.root.after(
+                    0, lambda: messagebox.showinfo("PDF saved", f"{len(frames)} pages → {out_path}")
+                )
+            except (tk.TclError, RuntimeError):
+                pass
         except Exception as e:
             self._log_main(f"  ✗ PDF export failed: {e}")
-            self.root.after(0, lambda err=str(e): messagebox.showerror("PDF export failed", err))
+            try:
+                self.root.after(0, lambda err=str(e): messagebox.showerror("PDF export failed", err))
+            except (tk.TclError, RuntimeError):
+                pass
 
     def _export_video(self) -> None:
         if self.total_chunks == 0:
@@ -1749,15 +1776,21 @@ class QRLServerGUI:
             writer.release()
             elapsed = time.time() - t0
             self._log_main(f"  ✓ {len(frames)} frames @ {fps} FPS in {elapsed:.2f}s")
-            self.root.after(
-                0,
-                lambda: messagebox.showinfo(
-                    "Video saved", f"{len(frames)} frames @ {fps} FPS → {out_path}"
-                ),
-            )
+            try:
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Video saved", f"{len(frames)} frames @ {fps} FPS → {out_path}"
+                    ),
+                )
+            except (tk.TclError, RuntimeError):
+                pass
         except Exception as e:
             self._log_main(f"  ✗ Video export failed: {e}")
-            self.root.after(0, lambda err=str(e): messagebox.showerror("Video export failed", err))
+            try:
+                self.root.after(0, lambda err=str(e): messagebox.showerror("Video export failed", err))
+            except (tk.TclError, RuntimeError):
+                pass
 
     # ------------------------------------------------------------------
     # Misc helpers
@@ -1784,11 +1817,14 @@ class QRLServerGUI:
         self.status_var.set(text)
 
     def _log(self, message: str) -> None:
-        timestamp = time.strftime("%H:%M:%S")
-        self.log_text.configure(state=tk.NORMAL)
-        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
-        self.log_text.configure(state=tk.DISABLED)
-        self.log_text.see(tk.END)
+        try:
+            timestamp = time.strftime("%H:%M:%S")
+            self.log_text.configure(state=tk.NORMAL)
+            self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+            self.log_text.configure(state=tk.DISABLED)
+            self.log_text.see(tk.END)
+        except tk.TclError:
+            pass
 
     def _clear_log(self) -> None:
         self.log_text.configure(state=tk.NORMAL)

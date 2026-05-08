@@ -259,7 +259,8 @@ def main():
         print("Initializing decoder...")
         decoder = QRLDecoder(
             args.output,
-            timeout=config.timeout
+            timeout=config.timeout,
+            preprocess=config.image_preprocessing,
         )
 
         # Start capturing
@@ -276,32 +277,37 @@ def main():
             frames = capture.get_frames()
 
             if frames:
-                # Attempt to decode
-                if decoder.decode(frames):
+                # Attempt to decode — cap at the 4 most recent frames.
+                # Older frames carry the same QR codes the server already
+                # cycled past; decoding them wastes CPU with zero new chunks.
+                if decoder.decode(frames[-4:]):
                     print(f"\n[OK] Successfully decoded!")
                     print(f"Output file: {args.output}")
                     break
 
-                # Show progress periodically
-                current_time = time.time()
-                if current_time - last_progress_time >= config.progress_interval:
-                    progress = decoder.get_progress()
+            # Show progress periodically regardless of whether frames arrived
+            current_time = time.time()
+            if current_time - last_progress_time >= config.progress_interval:
+                progress = decoder.get_progress()
+                elapsed = current_time - start_time
 
-                    if progress.get('total_chunks', 0) > 0:
-                        print(f"\nProgress: {progress['percentage']:.1f}% "
-                              f"({progress['decoded_chunks']}/{progress['total_chunks']} chunks)")
+                if progress.get('total_chunks', 0) > 0:
+                    print(f"\nProgress: {progress['percentage']:.1f}% "
+                          f"({progress['decoded_chunks']}/{progress['total_chunks']} chunks)"
+                          f"  [{elapsed:.0f}s]")
 
-                        if args.verbose:
-                            stats = decoder.get_statistics()
-                            print(f"  Frames processed: {stats['total_frames_processed']}")
-                            print(f"  QR read success rate: {stats['qr_read_success_rate']:.1f}%")
-                            print(f"  Time since last chunk: {stats['time_since_last_chunk']:.1f}s")
+                    if args.verbose:
+                        stats = decoder.get_statistics()
+                        print(f"  Frames processed: {stats['total_frames_processed']}")
+                        print(f"  QR read success rate: {stats['qr_read_success_rate']:.1f}%")
+                        print(f"  Time since last chunk: {stats['time_since_last_chunk']:.1f}s")
 
-                        # Save progress if requested
-                        if config.save_progress:
-                            decoder.save_partial_progress()
+                    if config.save_progress:
+                        decoder.save_partial_progress()
+                elif elapsed > 5:
+                    print(f"  Waiting for first QR code...  [{elapsed:.0f}s elapsed]")
 
-                    last_progress_time = current_time
+                last_progress_time = current_time
 
         else:
             # Timeout reached

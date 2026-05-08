@@ -143,12 +143,6 @@ class ParallelQREncoder:
             'is_directory': self.source_path.is_dir(),
         }
 
-        print(f"Parallel encoding prepared:")
-        print(f"  Data size: {total_data_size:,} bytes")
-        print(f"  Streams: {self.num_streams}")
-        print(f"  Max chunks per stream: {self._total_chunks_per_stream}")
-        print(f"  Total QR codes: {self._total_chunks_per_stream * self.num_streams}")
-
         return stream_info
 
     def _create_chunk_with_metadata(self, stream_id: int, sequence: int,

@@ -146,7 +146,6 @@ class QRLEncoder:
             'is_directory': self.source_path.is_dir()
         }
 
-        print(f"  {len(self._chunks)} chunks split from data")
         return len(self._chunks)
 
     def generate_qr_for_chunk(self, chunk_index: int) -> Image.Image:

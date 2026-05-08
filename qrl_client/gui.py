@@ -521,21 +521,36 @@ class QRLClientGUI:
                     # loop time on redundant label redraws.
                     now = time.time()
                     if now - _last_progress_update >= 0.2:
-                        self.root.after(0, self._update_progress)
+                        try:
+                            self.root.after(0, self._update_progress)
+                        except (tk.TclError, RuntimeError):
+                            pass
                         _last_progress_update = now
                     if success:
-                        self.root.after(0, self._update_progress)
-                        self.root.after(0, self._decoding_complete)
+                        try:
+                            self.root.after(0, self._update_progress)
+                            self.root.after(0, self._decoding_complete)
+                        except (tk.TclError, RuntimeError):
+                            pass
                         return
             # Loop exited without completion
-            self.root.after(0, self._capture_finished_without_success)
+            try:
+                self.root.after(0, self._capture_finished_without_success)
+            except (tk.TclError, RuntimeError):
+                pass
         except Exception as e:
-            self.root.after(0, lambda err=str(e): self._capture_error(err))
+            try:
+                self.root.after(0, lambda err=str(e): self._capture_error(err))
+            except (tk.TclError, RuntimeError):
+                pass
         finally:
             if self.capture_handler is not None:
                 self.capture_handler.stop()
             self.is_capturing = False
-            self.root.after(0, self._update_button_states)
+            try:
+                self.root.after(0, self._update_button_states)
+            except (tk.TclError, RuntimeError):
+                pass
 
     def _stop_capture(self) -> None:
         if not self.is_capturing:
@@ -557,9 +572,12 @@ class QRLClientGUI:
     def _schedule_preview_refresh(self) -> None:
         try:
             self._refresh_preview()
+        except Exception:
+            pass  # never let a preview error stop the refresh loop
+        try:
             self.root.after(self._PREVIEW_INTERVAL_MS, self._schedule_preview_refresh)
-        except tk.TclError:
-            pass  # root destroyed — stop the recurring callback
+        except (tk.TclError, RuntimeError):
+            pass  # root destroyed — stop the loop
 
     def _refresh_preview(self) -> None:
         frame = self._latest_preview
@@ -692,11 +710,14 @@ class QRLClientGUI:
         self.status_var.set(text)
 
     def _log(self, message: str) -> None:
-        timestamp = time.strftime("%H:%M:%S")
-        self.log_text.configure(state=tk.NORMAL)
-        self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
-        self.log_text.configure(state=tk.DISABLED)
-        self.log_text.see(tk.END)
+        try:
+            timestamp = time.strftime("%H:%M:%S")
+            self.log_text.configure(state=tk.NORMAL)
+            self.log_text.insert(tk.END, f"[{timestamp}] {message}\n")
+            self.log_text.configure(state=tk.DISABLED)
+            self.log_text.see(tk.END)
+        except tk.TclError:
+            pass
 
     def _save_log(self) -> None:
         filename = filedialog.asksaveasfilename(
