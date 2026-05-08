@@ -47,6 +47,7 @@ let fpsAvg = 0;
 let replayChunks = null; // null = normal mode; array of 0-based indices = replay mode
 let replayPos = 0;
 let replayCycles = 0;
+let repeatCount = 0;    // ticks remaining on current frame before advancing
 let lastRawData = null;
 let lastFilename = null;
 let lastIsDirectory = false;
@@ -158,6 +159,7 @@ async function startTransfer() {
   isPaused = false;
   frameCount = 0;
   fpsAvg = 0;
+  repeatCount = 0;
   lastFrameTs = performance.now();
 
   document.getElementById('startBtn').classList.add('hidden');
@@ -179,7 +181,10 @@ async function startTransfer() {
 
 async function tick() {
   if (isPaused) return;
+  if (repeatCount > 0) { repeatCount--; return; }
   await renderFrame();
+  const n = Math.max(1, parseInt(document.getElementById('chunkRepeat').value) || 1);
+  repeatCount = n - 1;
 }
 
 async function renderFrame() {
@@ -261,6 +266,7 @@ function startReplay() {
   isPaused = false;
   frameCount = 0;
   fpsAvg = 0;
+  repeatCount = 0;
   lastFrameTs = performance.now();
 
   document.getElementById('startBtn').classList.add('hidden');
@@ -280,6 +286,7 @@ function stopTransfer(resetUI = true) {
   isPaused = false;
   replayChunks = null;
   replayPos = 0;
+  repeatCount = 0;
   if (resetUI) {
     document.getElementById('startBtn').textContent = 'Restart Transfer';
     document.getElementById('startBtn').classList.remove('hidden');

@@ -340,3 +340,5 @@ function fmtBytes(n) {
 document.getElementById('cameraSelect').addEventListener('change', function() {
   if (mediaStream) switchCamera(this.value);
 });
+
+populateCameraSelect();
