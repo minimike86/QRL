@@ -53,16 +53,31 @@ CAPTURE_PRESETS = [
 class QRLClientGUI:
     """Modern QRL client GUI."""
 
-    def __init__(self, master: Optional[tk.Misc] = None):
-        if master is None:
+    def __init__(self, master: Optional[tk.Misc] = None, parent: Optional[tk.Misc] = None):
+        # Three modes:
+        #   parent: embedded into a frame (e.g. a notebook tab in the combined GUI)
+        #   master: Toplevel under another Tk root (used by tests)
+        #   neither: standalone — owns its Tk root
+        if parent is not None:
+            self.root = ttk.Frame(parent)
+            self.root.pack(fill=tk.BOTH, expand=True)
+            self._window = parent.winfo_toplevel()
+            self._embedded = True
+        elif master is None:
             self.root = tk.Tk()
+            self._window = self.root
+            self._embedded = False
         else:
             self.root = tk.Toplevel(master)
-        self.root.title("QRL Client — QR Stream Decoder")
-        self.root.geometry("1100x780")
-        self.root.minsize(960, 680)
+            self._window = self.root
+            self._embedded = False
 
-        self.fonts = apply_theme(self.root)
+        if not self._embedded:
+            self._window.title("QRL Client — QR Stream Decoder")
+            self._window.geometry("1100x780")
+            self._window.minsize(960, 680)
+
+        self.fonts = apply_theme(self._window)
 
         # Application state
         self.config = ClientConfig()
@@ -345,7 +360,8 @@ class QRLClientGUI:
         ).pack(side=tk.RIGHT)
 
     def _bind_events(self) -> None:
-        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+        if not self._embedded:
+            self._window.protocol("WM_DELETE_WINDOW", self._on_closing)
 
     # ------------------------------------------------------------------
     # Config plumbing
@@ -412,21 +428,21 @@ class QRLClientGUI:
             self._update_button_states()
 
     def _select_region(self) -> None:
-        self.root.iconify()
-        self.root.update_idletasks()
+        self._window.iconify()
+        self._window.update_idletasks()
         # Tiny delay so the parent window is actually minimized before the
         # picker grabs the screen.
         self.root.after(150, self._open_region_picker)
 
     def _open_region_picker(self) -> None:
         try:
-            region = pick_region(self.root)
+            region = pick_region(self._window)
         except Exception as e:
-            self.root.deiconify()
+            self._window.deiconify()
             messagebox.showerror("Region picker failed", str(e))
             return
-        self.root.deiconify()
-        self.root.lift()
+        self._window.deiconify()
+        self._window.lift()
         if region is None:
             self._log("Region selection cancelled")
             return
@@ -673,6 +689,16 @@ class QRLClientGUI:
         except Exception as e:
             messagebox.showerror("Save failed", str(e))
 
+    def shutdown(self) -> None:
+        """Stop capture without destroying the window. Used by the combined
+        GUI when the user closes the parent window."""
+        self.is_capturing = False
+        if self.capture_handler is not None:
+            try:
+                self.capture_handler.stop()
+            except Exception:
+                pass
+
     def _on_closing(self) -> None:
         if self.is_capturing:
             if not messagebox.askyesno(
@@ -680,14 +706,18 @@ class QRLClientGUI:
             ):
                 return
             self.is_capturing = False
+        if self._embedded:
+            return
         try:
-            self.root.destroy()
+            self._window.destroy()
         except tk.TclError:
             pass
 
     def run(self) -> None:
+        if self._embedded:
+            return
         try:
-            self.root.mainloop()
+            self._window.mainloop()
         except KeyboardInterrupt:
             self._on_closing()
 

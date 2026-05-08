@@ -143,10 +143,18 @@ def auto_grid_for_screen(screen_w: int, screen_h: int,
 class QRLServerGUI:
     """Modern QRL server GUI."""
 
-    def __init__(self, master: Optional[tk.Misc] = None):
-        # Tests share a single Tk root via a Toplevel; production creates its own.
-        # When standalone, prefer TkinterDnD.Tk so file drag-and-drop works.
-        if master is None:
+    def __init__(self, master: Optional[tk.Misc] = None, parent: Optional[tk.Misc] = None):
+        # Three modes:
+        #   parent: embedded into a frame (e.g. a notebook tab in the combined GUI)
+        #   master: Toplevel under another Tk root (used by tests)
+        #   neither: standalone — owns its Tk root
+        if parent is not None:
+            self.root = ttk.Frame(parent)
+            self.root.pack(fill=tk.BOTH, expand=True)
+            self._window = parent.winfo_toplevel()
+            self._embedded = True
+            self._dnd_available = False
+        elif master is None:
             try:
                 from tkinterdnd2 import TkinterDnD
 
@@ -155,14 +163,20 @@ class QRLServerGUI:
             except Exception:
                 self.root = tk.Tk()
                 self._dnd_available = False
+            self._window = self.root
+            self._embedded = False
         else:
             self.root = tk.Toplevel(master)
             self._dnd_available = False
-        self.root.title("QRL Server — QR Stream Encoder")
-        self.root.geometry("1100x780")
-        self.root.minsize(960, 680)
+            self._window = self.root
+            self._embedded = False
 
-        self.fonts = apply_theme(self.root)
+        if not self._embedded:
+            self._window.title("QRL Server — QR Stream Encoder")
+            self._window.geometry("1100x780")
+            self._window.minsize(960, 680)
+
+        self.fonts = apply_theme(self._window)
 
         # Application state
         self.config = ServerConfig()
@@ -487,7 +501,8 @@ class QRLServerGUI:
         ).pack(side=tk.RIGHT)
 
     def _bind_events(self) -> None:
-        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+        if not self._embedded:
+            self._window.protocol("WM_DELETE_WINDOW", self._on_closing)
 
     # ------------------------------------------------------------------
     # Config / preset plumbing
@@ -582,9 +597,9 @@ class QRLServerGUI:
         """Find the monitor under the server window and compute (cols, rows).
         Always uses AUTO_QR_TARGET_PX, NOT config.qr_physical_size."""
         try:
-            self.root.update_idletasks()
-            cx = self.root.winfo_x() + self.root.winfo_width() // 2
-            cy = self.root.winfo_y() + self.root.winfo_height() // 2
+            self._window.update_idletasks()
+            cx = self._window.winfo_x() + self._window.winfo_width() // 2
+            cy = self._window.winfo_y() + self._window.winfo_height() // 2
             mon = monitor_at_point(cx, cy) or primary_monitor()
             if mon is None:
                 self._last_auto_monitor_label = "unknown"
@@ -1011,15 +1026,15 @@ class QRLServerGUI:
         self._update_button_states()
 
     def _create_qr_display_window(self) -> None:
-        self.qr_window = tk.Toplevel(self.root)
+        self.qr_window = tk.Toplevel(self._window)
         self.qr_window.title("QRL Display")
         self.qr_window.configure(bg="white")
 
         # Find the monitor that the SERVER window is currently on, so the
         # QR display opens on the same screen the user is looking at.
-        self.root.update_idletasks()
-        cx = self.root.winfo_x() + self.root.winfo_width() // 2
-        cy = self.root.winfo_y() + self.root.winfo_height() // 2
+        self._window.update_idletasks()
+        cx = self._window.winfo_x() + self._window.winfo_width() // 2
+        cy = self._window.winfo_y() + self._window.winfo_height() // 2
         target = monitor_at_point(cx, cy) or primary_monitor()
 
         if target is not None:
@@ -1420,19 +1435,32 @@ class QRLServerGUI:
         self.log_text.delete("1.0", tk.END)
         self.log_text.configure(state=tk.DISABLED)
 
+    def shutdown(self) -> None:
+        """Stop background work without destroying the window. Used by the
+        combined GUI when the user closes the parent window."""
+        if self.is_encoding:
+            self.is_encoding = False
+        self._stop_display()
+        # Invalidate any in-flight prefetch generation
+        self._prefetch_gen = getattr(self, "_prefetch_gen", 0) + 1
+
     def _on_closing(self) -> None:
         if self.is_encoding:
             if not messagebox.askyesno("Quit", "Encoding in progress. Quit anyway?"):
                 return
         self._stop_display()
+        if self._embedded:
+            return
         try:
-            self.root.destroy()
+            self._window.destroy()
         except tk.TclError:
             pass
 
     def run(self) -> None:
+        if self._embedded:
+            return
         try:
-            self.root.mainloop()
+            self._window.mainloop()
         except KeyboardInterrupt:
             self._on_closing()
 
