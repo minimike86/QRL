@@ -145,3 +145,4 @@ pytest tests/
 - [txqr](https://github.com/divan/txqr)
 - [QRxfil](https://github.com/OverkillGuy/qrxfil) 
 - [QRExfil](https://github.com/Shell-Company/QRExfil)
+- [qrterminal](https://github.com/mdp/qrterminal)
