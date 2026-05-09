@@ -134,6 +134,7 @@ class QRLDecoder:
         self._resolved_output_path: Optional[str] = None
         self._started_at: Optional[float] = None
         self._completed: bool = False
+        self._manifest_resets: int = 0  # increments each time a new transfer evicts old data
 
     # ── Decode entry point ────────────────────────────────────────────────────
 
@@ -165,14 +166,27 @@ class QRLDecoder:
 
         # ── Manifest ──────────────────────────────────────────────────────────
         if stream_id == MANIFEST_STREAM_ID:
+            try:
+                candidate = json.loads(data.decode("utf-8"))
+            except Exception:
+                return
             if self._manifest is None:
-                try:
-                    self._manifest = json.loads(data.decode("utf-8"))
-                    expected = self._manifest.get("total_chunks", 0)
-                    if not self._manifest.get("fountain"):
-                        self._total_chunks = expected
-                except Exception:
-                    pass
+                self._manifest = candidate
+                if not candidate.get("fountain"):
+                    self._total_chunks = candidate.get("total_chunks", 0)
+            elif self._is_new_transfer(candidate):
+                # Different file — discard everything collected so far.
+                self._reset_chunk_state()
+                self._manifest = candidate
+                if not candidate.get("fountain"):
+                    self._total_chunks = candidate.get("total_chunks", 0)
+            return
+
+        # ── Gate: ignore data before manifest ────────────────────────────────
+        # Any chunk received before the manifest belongs to an unknown transfer
+        # and must be discarded — we don't yet know the file size, mode, or
+        # whether it's even for the same file.
+        if self._manifest is None:
             return
 
         # ── Fountain packet (stream_id == 2) ──────────────────────────────────
@@ -203,6 +217,28 @@ class QRLDecoder:
             self.last_chunk_time = time.time()
         bucket[sequence] = data
         self._qrs_decoded_total += 1
+
+    def _is_new_transfer(self, candidate: dict) -> bool:
+        """True if candidate manifest describes a different file than self._manifest."""
+        for key in ("filename", "size", "total_chunks", "fountain", "chunk_size"):
+            if candidate.get(key) != self._manifest.get(key):
+                return True
+        return False
+
+    def _reset_chunk_state(self) -> None:
+        """Discard all accumulated chunk data. Called when a new manifest evicts the old one."""
+        self._streams.clear()
+        self._totals.clear()
+        self._source_recovered.clear()
+        self._fountain_packets.clear()
+        self._seen_seeds.clear()
+        self._received_chunks = 0
+        self._unique_chunks = 0
+        self._total_chunks = 0
+        self._bytes_received = 0
+        self._completed = False
+        self._resolved_output_path = None
+        self._manifest_resets += 1
 
     # ── Fountain belief-propagation decoder ───────────────────────────────────
 
@@ -320,12 +356,18 @@ class QRLDecoder:
                     missing.append((stream_id, seq))
         return missing
 
+    def get_fountain_recovered_indices(self) -> Set[int]:
+        """Returns the set of source chunk indices recovered so far (fountain only)."""
+        return set(self._source_recovered.keys())
+
     def get_statistics(self) -> dict:
         elapsed = max((time.time() - self._started_at) if self._started_at else 0.0, 1e-3)
         progress = self.get_progress()
         return {
             "total_frames_processed": self._frames_processed,
             "qr_read_success_rate": self.reader.get_success_rate(),
+            "avg_qrs_per_frame": self.reader.get_avg_qrs_per_read(),
+            "manifest_resets": self._manifest_resets,
             "qrs_decoded": self._qrs_decoded_total,
             "successful_qr_reads": self._qrs_decoded_total,
             "unique_chunks": self._unique_chunks,

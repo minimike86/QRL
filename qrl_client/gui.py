@@ -91,6 +91,7 @@ class QRLClientGUI:
         self._latest_preview: Optional[np.ndarray] = None
         self._preview_photo: Optional[ImageTk.PhotoImage] = None
         self._capture_started_at: Optional[float] = None
+        self._last_manifest_resets: int = 0
 
         self._build_ui()
         self._bind_events()
@@ -324,9 +325,43 @@ class QRLClientGUI:
         self.time_remaining_var = tk.StringVar(value="–")
 
         stat(stats, "Frames", self.frames_processed_var).grid(row=0, column=0, sticky="w")
-        stat(stats, "QR success", self.qr_success_rate_var).grid(row=0, column=1, sticky="w")
+        self.qr_rate_label_var = tk.StringVar(value="QR success")
+        qr_cell = ttk.Frame(stats, style="Card.TFrame")
+        ttk.Label(qr_cell, textvariable=self.qr_rate_label_var, style="CardMuted.TLabel").pack(anchor="w")
+        ttk.Label(qr_cell, textvariable=self.qr_success_rate_var, style="Card.TLabel").pack(anchor="w")
+        qr_cell.grid(row=0, column=1, sticky="w")
         stat(stats, "Chunks", self.chunks_decoded_var).grid(row=0, column=2, sticky="w")
         stat(stats, "ETA", self.time_remaining_var).grid(row=0, column=3, sticky="w")
+
+        # ── Chunk map (shown once manifest arrives) ───────────────────────────
+        self._chunk_map_section = ttk.Frame(progress_card, style="Card.TFrame")
+        # Not packed yet — _update_chunk_map() reveals it on first data.
+
+        chunk_hdr = ttk.Frame(self._chunk_map_section, style="Card.TFrame")
+        chunk_hdr.pack(fill=tk.X, pady=(8, 4))
+        ttk.Label(chunk_hdr, text="CHUNK MAP", style="CardMuted.TLabel").pack(side=tk.LEFT)
+        self._copy_missing_btn = ttk.Button(
+            chunk_hdr, text="Copy missing", command=self._copy_missing, state=tk.DISABLED
+        )
+        self._copy_missing_btn.pack(side=tk.RIGHT)
+
+        self._chunk_map_canvas = tk.Canvas(
+            self._chunk_map_section, bg=BG_ELEVATED, highlightthickness=0, height=20,
+        )
+        self._chunk_map_canvas.pack(fill=tk.X)
+        self._chunk_map_canvas.bind("<Configure>", lambda _e: self._draw_chunk_map())
+
+        self._chunk_missing_var = tk.StringVar(value="")
+        ttk.Label(
+            self._chunk_map_section,
+            textvariable=self._chunk_missing_var,
+            style="CardMuted.TLabel",
+            wraplength=360,
+        ).pack(anchor="w", pady=(4, 0))
+
+        self._chunk_map_total: int = 0
+        self._chunk_map_received: set = set()
+        self._chunk_map_is_fountain: bool = False
 
         # Logs (collapsible-ish area at bottom)
         logs_card = card(parent)
@@ -474,6 +509,13 @@ class QRLClientGUI:
         self.is_capturing = True
         self._capture_started_at = time.time()
         self.detected_filename_var.set("Waiting for manifest…")
+        self._chunk_map_total = 0
+        self._chunk_map_received = set()
+        self._last_manifest_resets = 0
+        try:
+            self._chunk_map_section.pack_forget()
+        except tk.TclError:
+            pass
         self._update_button_states()
         set_status(self.status_label, "running", "Capturing")
         self._update_status("Capturing…")
@@ -633,6 +675,18 @@ class QRLClientGUI:
         progress = self.decoder.get_progress()
         stats = self.decoder.get_statistics()
 
+        resets = stats.get("manifest_resets", 0)
+        if resets > self._last_manifest_resets:
+            self._last_manifest_resets = resets
+            self._log("New transfer detected — chunk state reset for new manifest.")
+            self.detected_filename_var.set("Waiting for manifest…")
+            self._chunk_map_total = 0
+            self._chunk_map_received = set()
+            try:
+                self._chunk_map_section.pack_forget()
+            except tk.TclError:
+                pass
+
         manifest = self.decoder.get_manifest()
         if manifest is not None:
             fname = manifest.get("filename", "?")
@@ -652,7 +706,13 @@ class QRLClientGUI:
             self.progress_label_var.set("Waiting for first QR…")
 
         self.frames_processed_var.set(f"{stats.get('total_frames_processed', 0):,}")
-        self.qr_success_rate_var.set(f"{stats.get('qr_read_success_rate', 0):.0f}%")
+        avg_qrs = stats.get("avg_qrs_per_frame", 0.0)
+        if avg_qrs >= 1.5:
+            self.qr_rate_label_var.set("QR codes/frame")
+            self.qr_success_rate_var.set(f"{avg_qrs:.1f}")
+        else:
+            self.qr_rate_label_var.set("QR success")
+            self.qr_success_rate_var.set(f"{stats.get('qr_read_success_rate', 0):.0f}%")
         self.chunks_decoded_var.set(f"{decoded:,} / {total:,}")
 
         if 0 < pct < 100:
@@ -663,6 +723,97 @@ class QRLClientGUI:
             self.time_remaining_var.set("done")
         else:
             self.time_remaining_var.set("–")
+
+        self._update_chunk_map()
+
+    def _update_chunk_map(self) -> None:
+        if self.decoder is None:
+            return
+        manifest = self.decoder.get_manifest()
+        if manifest is None:
+            return
+        total = manifest.get("total_chunks", 0)
+        if total == 0:
+            return
+
+        # Reveal the section on first call
+        if not self._chunk_map_section.winfo_ismapped():
+            self._chunk_map_section.pack(fill=tk.X, pady=(8, 0))
+
+        is_fountain = manifest.get("fountain", False)
+        self._chunk_map_total = total
+        self._chunk_map_is_fountain = is_fountain
+
+        if is_fountain:
+            self._chunk_map_received = self.decoder.get_fountain_recovered_indices()
+            n_missing = total - len(self._chunk_map_received)
+            self._chunk_missing_var.set(
+                f"{n_missing} source chunks pending" if n_missing else "All source chunks recovered"
+            )
+            self._copy_missing_btn.configure(state=tk.DISABLED)
+        else:
+            missing_pairs = self.decoder.get_missing_chunks()
+            missing_seqs = {seq for (_, seq) in missing_pairs}
+            self._chunk_map_received = set(range(total)) - missing_seqs
+            if missing_seqs:
+                nums = sorted(missing_seqs)
+                parts = [str(n + 1) for n in nums[:50]]
+                suffix = f"  +{len(nums) - 50} more" if len(nums) > 50 else ""
+                self._chunk_missing_var.set("Missing: " + ", ".join(parts) + suffix)
+                self._copy_missing_btn.configure(state=tk.NORMAL)
+            else:
+                self._chunk_missing_var.set("All chunks received")
+                self._copy_missing_btn.configure(state=tk.DISABLED)
+
+        self._draw_chunk_map()
+
+    def _draw_chunk_map(self) -> None:
+        total = self._chunk_map_total
+        received = self._chunk_map_received
+        canvas = self._chunk_map_canvas
+
+        if total == 0:
+            canvas.configure(height=1)
+            canvas.delete("all")
+            return
+
+        w = max(canvas.winfo_width(), 200)
+
+        if total <= 300:
+            cell, gap = 10, 2
+        elif total <= 800:
+            cell, gap = 6, 1
+        elif total <= 2000:
+            cell, gap = 4, 1
+        else:
+            cell, gap = 3, 1
+        stride = cell + gap
+
+        cols = max(1, (w - gap) // stride)
+        rows = (total + cols - 1) // cols
+        canvas.configure(height=rows * stride + gap)
+        canvas.delete("all")
+
+        for i in range(total):
+            col = i % cols
+            row = i // cols
+            x1 = gap + col * stride
+            y1 = gap + row * stride
+            color = "#00ff88" if i in received else BG_ELEVATED
+            canvas.create_rectangle(x1, y1, x1 + cell, y1 + cell, fill=color, outline="")
+
+    def _copy_missing(self) -> None:
+        if self.decoder is None:
+            return
+        missing = self.decoder.get_missing_chunks()
+        if not missing:
+            return
+        text = ", ".join(str(seq + 1) for (_, seq) in sorted(missing, key=lambda x: x[1]))
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+        except tk.TclError:
+            pass
 
     def _decoding_complete(self) -> None:
         self.progress_var.set(100)

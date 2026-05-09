@@ -15,10 +15,11 @@ from pyzbar.pyzbar import decode as pyzbar_decode
 
 ImageInput = Union[np.ndarray, Image.Image]
 
-# pyzbar reads QR codes reliably at this pixel ceiling. Downscaling a 4K
-# frame (8 MP) to 1024px long-edge cuts decode time by ~15× with no loss of
-# accuracy — QR modules only need a few pixels each.
-_MAX_DECODE_DIM = 1024
+# For single-QR, 1024px is plenty. For multi-QR grids (e.g. 3×3 at 200px
+# per code on a 4K screen), individual codes shrink to ~53px at 1024 cap —
+# below pyzbar's reliable threshold. 1920 keeps full-1080p frames unscaled
+# and gives 4K frames ~2× more resolution than 1024 did.
+_MAX_DECODE_DIM = 1920
 
 
 class QRReader:
@@ -29,6 +30,7 @@ class QRReader:
         self._last_confidence = 0.0
         self._total_reads = 0
         self._successful_reads = 0
+        self._total_qrs_decoded = 0
 
     def read(self, image: ImageInput) -> Optional[bytes]:
         """Read the first QR code in image. Returns its raw bytes, or None."""
@@ -63,6 +65,7 @@ class QRReader:
                 payloads.append(d.data.decode("utf-8").encode("latin-1"))
             except (UnicodeDecodeError, UnicodeEncodeError):
                 payloads.append(d.data)  # foreign/text QR — let decoder skip it
+        self._total_qrs_decoded += len(payloads)
         return payloads
 
     def get_confidence(self) -> float:
@@ -73,9 +76,16 @@ class QRReader:
             return 0.0
         return (self._successful_reads / self._total_reads) * 100.0
 
+    def get_avg_qrs_per_read(self) -> float:
+        """Average number of QR codes decoded per frame (>1 means multi-QR is active)."""
+        if self._total_reads == 0:
+            return 0.0
+        return self._total_qrs_decoded / self._total_reads
+
     def reset_statistics(self) -> None:
         self._total_reads = 0
         self._successful_reads = 0
+        self._total_qrs_decoded = 0
         self._last_confidence = 0.0
 
     @staticmethod
