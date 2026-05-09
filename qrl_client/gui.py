@@ -637,8 +637,9 @@ class QRLClientGUI:
         if manifest is not None:
             fname = manifest.get("filename", "?")
             size = manifest.get("size", 0)
+            mode = "fountain" if manifest.get("fountain") else "sequential"
             self.detected_filename_var.set(
-                f"📄  {fname}  ·  {size/1024:.1f} KB"
+                f"📄  {fname}  ·  {size/1024:.1f} KB  ·  {mode}"
             )
 
         pct = progress.get("percentage", 0)
@@ -676,9 +677,18 @@ class QRLClientGUI:
 
     def _capture_finished_without_success(self) -> None:
         progress = self.decoder.get_progress() if self.decoder else {"percentage": 0}
-        missing = self.decoder.get_missing_chunks() if self.decoder else []
-        self._log(f"Capture stopped at {progress.get('percentage', 0):.1f}%, missing {len(missing)} chunks")
-        if missing:
+        pct = progress.get("percentage", 0)
+        manifest = self.decoder.get_manifest() if self.decoder else None
+        if manifest and manifest.get("fountain"):
+            recovered = progress.get("decoded_chunks", 0)
+            total = progress.get("total_chunks", 0)
+            self._log(f"Capture stopped at {pct:.1f}% — fountain: {recovered}/{total} source chunks recovered")
+            incomplete = pct < 100
+        else:
+            missing = self.decoder.get_missing_chunks() if self.decoder else []
+            self._log(f"Capture stopped at {pct:.1f}%, missing {len(missing)} chunks")
+            incomplete = bool(missing)
+        if incomplete:
             set_status(self.status_label, "error", "Incomplete")
             self._update_status("Stopped — incomplete")
         else:

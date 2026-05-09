@@ -1,41 +1,104 @@
 """
 QRL Client Decoder
 
-Reconstructs files from streamed QR captures. Handles single-stream and
-parallel-stream encodings uniformly via the shared 9-byte wire header
-defined in qrl_server.chunk.
+Reconstructs files from streamed QR captures. Handles both transfer modes
+produced by the qrl_web sender:
 
-If the stream's manifest declares is_directory=True, the decoded payload
-(a tar archive built by ChunkManager.read_directory) is automatically
-extracted into output_dir/<filename>/.
+  Sequential (stream_id=0): chunks cycle 0…N-1; reassembled by concatenation.
+  Fountain   (stream_id=2): infinite XOR-coded LT-code packets; reassembled
+                            via iterative belief-propagation (peeling decoder).
+
+The manifest (stream_id=255) carries filename, size, and mode metadata.
+Directories arrive as a .zip archive (web sender) or .tar archive (legacy).
 """
 
+import gzip
 import io
 import json
+import struct
 import tarfile
 import time
+import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
-# Shared wire format with the server. Both packages ship together.
-from qrl_server.chunk import (
-    HEADER_SIZE,  # noqa: F401
-    MANIFEST_STREAM_ID,
-    decompress,
-    parse_manifest_payload,
-    unpack_header,
-)
+from typing import Dict, List, Optional, Set, Tuple
 
 from .qr_reader import QRReader
 
+# ── Wire format ───────────────────────────────────────────────────────────────
+HEADER_SIZE = 9
+MANIFEST_STREAM_ID = 255
+FOUNTAIN_STREAM_ID = 2
+
+
+def _unpack_header(payload: bytes) -> Optional[Tuple[int, int, int, bytes]]:
+    """Return (stream_id, sequence, total_chunks, data) or None if too short."""
+    if len(payload) < HEADER_SIZE:
+        return None
+    stream_id = payload[0]
+    sequence = struct.unpack_from(">I", payload, 1)[0]
+    total_chunks = struct.unpack_from(">I", payload, 5)[0]
+    return stream_id, sequence, total_chunks, payload[HEADER_SIZE:]
+
+
+def _decompress(data: bytes) -> bytes:
+    return gzip.decompress(data)
+
+
+# ── Fountain coding (LT code) — must match qrl_web sender.js exactly ─────────
+
+def _lcg_next(s: int) -> Tuple[float, int]:
+    """One step of the seeded LCG. Returns (float in [0,1), next state)."""
+    s = (1664525 * s + 1013904223) & 0xFFFFFFFF
+    return s / 4294967296.0, s
+
+
+def _choose_degree(s: int, N: int) -> Tuple[int, int]:
+    """Draw degree from the LT distribution. Returns (degree, new_state)."""
+    if N == 1:
+        return 1, s
+    r, s = _lcg_next(s)
+    if r < 0.50:
+        return 1, s
+    if r < 0.75:
+        return min(2, N), s
+    if r < 0.90:
+        return min(3, N), s
+    # High-degree branch — consumes a second RNG call (same as JS).
+    r2, s = _lcg_next(s)
+    degree = 3 + int(-(-r2 * max(min(N - 3, 5), 0) // 1))  # equivalent to Math.ceil
+    return min(N, degree), s
+
+
+def _choose_indices(s: int, N: int, degree: int) -> Tuple[List[int], int]:
+    """Draw `degree` distinct indices in [0, N). Returns (sorted list, new_state)."""
+    idxs: Set[int] = set()
+    while len(idxs) < min(degree, N):
+        r, s = _lcg_next(s)
+        idxs.add(int(r * N))
+    return sorted(idxs), s
+
+
+def _derive_packet(seed: int, N: int) -> List[int]:
+    """Return the source-chunk indices XOR'd together to form packet `seed`."""
+    s = seed & 0xFFFFFFFF
+    degree, s = _choose_degree(s, N)
+    indices, _ = _choose_indices(s, N, degree)
+    return indices
+
+
+def _xor_into(dst: bytearray, src: bytes) -> None:
+    for i in range(min(len(dst), len(src))):
+        dst[i] ^= src[i]
+
+
+# ── Decoder ───────────────────────────────────────────────────────────────────
 
 class QRLDecoder:
     """Decodes QR sequences back into files.
 
-    `output_path` may be either:
-      * a file path  — output is always written there (legacy mode)
-      * a directory  — output filename is read from the stream's manifest
-                       (or "decoded.bin" if no manifest is seen)
+    `output_path` may be:
+      * a file path  — output written there directly
+      * a directory  — output filename taken from the manifest
     """
 
     def __init__(self, output_path: str, timeout: int = 300, preprocess: bool = True):
@@ -43,35 +106,37 @@ class QRLDecoder:
         self.timeout = timeout
         self.start_time = time.time()
         self.last_chunk_time = time.time()
-        self._processed_frames = 0
-        self._successful_reads = 0
 
         self.reader = QRReader(preprocess=preprocess)
-        # streams: {stream_id: {sequence: data_bytes}}
+
+        # ── Sequential state ──────────────────────────────────────────────────
+        # streams[stream_id][sequence] = payload bytes
         self._streams: Dict[int, Dict[int, bytes]] = {}
-        # totals[stream_id] = expected number of chunks in that stream
         self._totals: Dict[int, int] = {}
 
-        # Running counters — kept in sync by _consume_qr_payload so that
-        # get_progress() and get_statistics() are O(1) instead of O(chunks).
-        self._received_chunks: int = 0   # unique chunks stored so far
-        self._total_chunks: int = 0      # sum of all known _totals values
-        self._bytes_received: int = 0    # raw bytes stored so far
+        # ── Fountain state ────────────────────────────────────────────────────
+        # source_recovered[chunk_index] = zero-padded chunk bytes
+        self._source_recovered: Dict[int, bytearray] = {}
+        # Pending packets where >1 source chunk is still unknown
+        self._fountain_packets: List[Dict] = []
+        self._seen_seeds: Set[int] = set()
 
-        # Manifest received from a stream_id=255 chunk (if any)
+        # ── Running counters (O(1) progress queries) ──────────────────────────
+        self._frames_processed: int = 0
+        self._qrs_decoded_total: int = 0
+        self._unique_chunks: int = 0
+        self._received_chunks: int = 0
+        self._total_chunks: int = 0
+        self._bytes_received: int = 0
+
+        # ── Manifest + status ─────────────────────────────────────────────────
         self._manifest: Optional[dict] = None
-        # Final resolved output path (only known after manifest seen, if applicable)
         self._resolved_output_path: Optional[str] = None
-
         self._started_at: Optional[float] = None
-        self._frames_processed = 0
-        self._qrs_decoded_total = 0
-        self._unique_chunks = 0
-        self._completed = False
+        self._completed: bool = False
 
-    # ------------------------------------------------------------------
-    # Decode entry point
-    # ------------------------------------------------------------------
+    # ── Decode entry point ────────────────────────────────────────────────────
+
     def decode(self, frames: List) -> bool:
         """Process frames; returns True when the output file is fully written."""
         if not frames:
@@ -93,25 +158,42 @@ class QRLDecoder:
         return self._completed
 
     def _consume_qr_payload(self, payload: bytes) -> None:
-        parsed = unpack_header(payload)
+        parsed = _unpack_header(payload)
         if parsed is None:
             return
-        stream_id, sequence, total, data = parsed
+        stream_id, sequence, total_chunks, data = parsed
 
-        # Manifest channel — extract metadata, don't store as data
+        # ── Manifest ──────────────────────────────────────────────────────────
         if stream_id == MANIFEST_STREAM_ID:
             if self._manifest is None:
                 try:
-                    self._manifest = parse_manifest_payload(data)
+                    self._manifest = json.loads(data.decode("utf-8"))
+                    expected = self._manifest.get("total_chunks", 0)
+                    if not self._manifest.get("fountain"):
+                        self._total_chunks = expected
                 except Exception:
-                    pass  # ignore malformed manifest
+                    pass
             return
 
-        # Update running total counter when a stream reports a new (or changed) total.
+        # ── Fountain packet (stream_id == 2) ──────────────────────────────────
+        if stream_id == FOUNTAIN_STREAM_ID:
+            seed = sequence
+            if seed in self._seen_seeds:
+                self._qrs_decoded_total += 1
+                return
+            self._seen_seeds.add(seed)
+            N = total_chunks
+            indices = _derive_packet(seed, N)
+            self._add_fountain_packet(indices, bytearray(data))
+            self._qrs_decoded_total += 1
+            self.last_chunk_time = time.time()
+            return
+
+        # ── Sequential chunk (stream_id == 0, or legacy multi-stream) ────────
         old_total = self._totals.get(stream_id, 0)
-        if total != old_total:
-            self._total_chunks += total - old_total
-            self._totals[stream_id] = total
+        if total_chunks != old_total:
+            self._total_chunks += total_chunks - old_total
+            self._totals[stream_id] = total_chunks
 
         bucket = self._streams.setdefault(stream_id, {})
         if sequence not in bucket:
@@ -122,55 +204,106 @@ class QRLDecoder:
         bucket[sequence] = data
         self._qrs_decoded_total += 1
 
-    # ------------------------------------------------------------------
-    # Status / introspection
-    # ------------------------------------------------------------------
+    # ── Fountain belief-propagation decoder ───────────────────────────────────
+
+    def _add_fountain_packet(self, all_indices: List[int], payload: bytearray) -> None:
+        """Integrate one fountain packet into the decoder."""
+        pending: List[int] = []
+        for idx in all_indices:
+            recovered = self._source_recovered.get(idx)
+            if recovered is not None:
+                _xor_into(payload, recovered)
+            else:
+                pending.append(idx)
+
+        if not pending:
+            return
+        if len(pending) == 1:
+            self._recover_source_chunk(pending[0], payload)
+            return
+        self._fountain_packets.append({"indices": pending, "payload": payload})
+
+    def _recover_source_chunk(self, start_idx: int, start_payload: bytearray) -> None:
+        """Recover a source chunk and propagate through pending packets."""
+        queue: List[Tuple[int, bytearray]] = [(start_idx, start_payload)]
+        while queue:
+            idx, pl = queue.pop(0)
+            if idx in self._source_recovered:
+                continue
+            self._source_recovered[idx] = pl
+            self._unique_chunks += 1
+            self._bytes_received += len(pl)
+
+            remaining = []
+            for pkt in self._fountain_packets:
+                if idx not in pkt["indices"]:
+                    remaining.append(pkt)
+                    continue
+                _xor_into(pkt["payload"], pl)
+                pkt["indices"].remove(idx)
+                if len(pkt["indices"]) == 1:
+                    queue.append((pkt["indices"][0], pkt["payload"]))
+                elif len(pkt["indices"]) > 1:
+                    remaining.append(pkt)
+            self._fountain_packets = remaining
+
+    # ── Completion ────────────────────────────────────────────────────────────
+
     def is_complete(self) -> bool:
+        if self._manifest is None:
+            return False
+
+        if self._manifest.get("fountain"):
+            expected = self._manifest.get("total_chunks", 0)
+            return expected > 0 and len(self._source_recovered) >= expected
+
+        # Sequential: all streams fully received
         if not self._totals:
             return False
-        # Fast path: running counters let us short-circuit without iterating streams.
         if self._received_chunks < self._total_chunks:
             return False
-        # Slow path: verify per-stream in case totals are uneven across streams.
         for stream_id, total in self._totals.items():
             if len(self._streams.get(stream_id, {})) < total:
                 return False
-        # If manifest declared more streams than we've received, wait for them.
-        if self._manifest is not None:
-            expected_streams = self._manifest.get("num_streams", 0)
-            if expected_streams and len(self._totals) < expected_streams:
-                return False
+        expected_streams = self._manifest.get("num_streams", 0)
+        if expected_streams and len(self._totals) < expected_streams:
+            return False
         return True
 
+    # ── Progress / statistics ─────────────────────────────────────────────────
+
     def get_manifest(self) -> Optional[dict]:
-        """Returns the parsed manifest dict if one has been seen, else None."""
         return self._manifest
 
     def resolve_output_path(self) -> str:
-        """Pick the actual output path, honoring the manifest filename when
-        the configured output_path is a directory."""
         if self._resolved_output_path is not None:
             return self._resolved_output_path
-
         out = Path(self.output_path)
         treat_as_dir = out.is_dir() or (not out.exists() and out.suffix == "")
         if treat_as_dir:
-            filename = (self._manifest or {}).get("filename") if self._manifest else None
-            if not filename:
-                filename = "decoded.bin"
-            filename = Path(filename).name
-            self._resolved_output_path = str(out / filename)
+            filename = (self._manifest or {}).get("filename") or "decoded.bin"
+            self._resolved_output_path = str(out / Path(filename).name)
         else:
             self._resolved_output_path = str(out)
         return self._resolved_output_path
 
     def get_progress(self) -> dict:
-        """O(1) — uses running counters maintained by _consume_qr_payload."""
+        if self._manifest and self._manifest.get("fountain"):
+            expected = self._manifest.get("total_chunks", 0)
+            decoded = len(self._source_recovered)
+            pct = (decoded / expected * 100.0) if expected > 0 else 0.0
+            return {
+                "percentage": pct,
+                "decoded_chunks": decoded,
+                "total_chunks": expected,
+                "streams": 1,
+                "complete": self._completed,
+            }
         total = self._total_chunks
         decoded = self._received_chunks
-        percentage = (decoded / total * 100.0) if total > 0 else 0.0
+        pct = (decoded / total * 100.0) if total > 0 else 0.0
         return {
-            "percentage": percentage,
+            "percentage": pct,
             "decoded_chunks": decoded,
             "total_chunks": total,
             "streams": len(self._totals),
@@ -178,7 +311,7 @@ class QRLDecoder:
         }
 
     def get_missing_chunks(self) -> List[Tuple[int, int]]:
-        """Returns a list of (stream_id, sequence) for chunks not yet received."""
+        """Returns (stream_id, sequence) pairs not yet received (sequential only)."""
         missing: List[Tuple[int, int]] = []
         for stream_id, total in self._totals.items():
             received = self._streams.get(stream_id, {})
@@ -188,15 +321,9 @@ class QRLDecoder:
         return missing
 
     def get_statistics(self) -> dict:
-        """O(1) — uses running counters; keys are a superset of what both
-        the CLI and GUI expect."""
-        elapsed = (time.time() - self._started_at) if self._started_at else 0.0
-        elapsed = max(elapsed, 1e-3)
-        time_since_last = time.time() - self.last_chunk_time
-
+        elapsed = max((time.time() - self._started_at) if self._started_at else 0.0, 1e-3)
         progress = self.get_progress()
         return {
-            # Core counters
             "total_frames_processed": self._frames_processed,
             "qr_read_success_rate": self.reader.get_success_rate(),
             "qrs_decoded": self._qrs_decoded_total,
@@ -205,30 +332,72 @@ class QRLDecoder:
             "elapsed_time": elapsed,
             "bytes_received": self._bytes_received,
             "bytes_per_second": self._bytes_received / elapsed,
-            # Convenience aliases used by the CLI
             "completion_percentage": progress["percentage"],
-            "time_since_last_chunk": time_since_last,
+            "time_since_last_chunk": time.time() - self.last_chunk_time,
         }
 
     def save_partial_progress(self) -> None:
-        """Persist current decoding progress next to the output path."""
         progress_path = Path(str(self.output_path) + ".progress.json")
         progress = {
             "totals": {str(k): v for k, v in self._totals.items()},
             "received_per_stream": {
                 str(sid): sorted(seqs.keys()) for sid, seqs in self._streams.items()
             },
+            "fountain_recovered": sorted(self._source_recovered.keys()),
             "frames_processed": self._frames_processed,
             "elapsed_time": (time.time() - self._started_at) if self._started_at else 0.0,
         }
         progress_path.parent.mkdir(parents=True, exist_ok=True)
         progress_path.write_text(json.dumps(progress, indent=2))
 
-    # ------------------------------------------------------------------
-    # Output
-    # ------------------------------------------------------------------
+    # ── Output ────────────────────────────────────────────────────────────────
+
     def _write_output(self) -> None:
-        # Concatenate streams in stream_id order (matches ParallelQREncoder layout).
+        data = self._reassemble()
+        if data is None:
+            return
+
+        if self._manifest and self._manifest.get("compressed"):
+            try:
+                data = _decompress(data)
+            except Exception as e:
+                self._decompress_error = str(e)
+
+        if self._manifest and self._manifest.get("is_directory"):
+            self._extract_directory(data)
+            return
+
+        out = Path(self.resolve_output_path())
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
+
+    def _reassemble(self) -> Optional[bytes]:
+        """Build the raw (possibly still compressed) byte stream."""
+        if self._manifest and self._manifest.get("fountain"):
+            return self._reassemble_fountain()
+        return self._reassemble_sequential()
+
+    def _reassemble_fountain(self) -> Optional[bytes]:
+        """Concatenate zero-padded source chunks, trim to manifest.size."""
+        N = self._manifest.get("total_chunks", 0)
+        chunk_size = self._manifest.get("chunk_size", 0)
+        total_bytes = self._manifest.get("size", 0)
+        if not (N and chunk_size and total_bytes):
+            return None
+
+        result = bytearray(total_bytes)
+        offset = 0
+        for i in range(N):
+            chunk = self._source_recovered.get(i)
+            if chunk is None:
+                return None
+            actual = min(chunk_size, total_bytes - offset)
+            result[offset:offset + actual] = chunk[:actual]
+            offset += actual
+        return bytes(result)
+
+    def _reassemble_sequential(self) -> Optional[bytes]:
+        """Concatenate variable-length sequential payloads in stream/sequence order."""
         parts: List[bytes] = []
         for stream_id in sorted(self._totals):
             chunks = self._streams[stream_id]
@@ -236,40 +405,36 @@ class QRLDecoder:
                 parts.append(chunks[seq])
         data = b"".join(parts)
 
-        # Manifest tells us the wire size — strip stream-padding if present.
         if self._manifest is not None:
             declared_size = self._manifest.get("size")
             if isinstance(declared_size, int) and 0 < declared_size <= len(data):
                 data = data[:declared_size]
+        return data
 
-        # If the server compressed the data, decompress it now.
-        if self._manifest is not None and self._manifest.get("compressed"):
-            try:
-                data = decompress(data)
-            except Exception as e:
-                self._decompress_error = str(e)
+    def _extract_directory(self, data: bytes) -> None:
+        """Extract a zip (web sender) or tar (legacy) directory archive."""
+        out_dir = Path(self.output_path) if Path(self.output_path).is_dir() else Path(self.output_path).parent
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-        # If the manifest declared this was a directory, the data is a tar
-        # archive — extract it into the output folder.
-        if (
-            self._manifest is not None
-            and self._manifest.get("is_directory")
-            and Path(self.output_path).is_dir()
-        ):
-            target_dir = Path(self.output_path)
-            target_dir.mkdir(parents=True, exist_ok=True)
+        # Try zip first (web sender packs folders as .zip via JSZip).
+        if zipfile.is_zipfile(io.BytesIO(data)):
             try:
-                with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
-                    try:
-                        tar.extractall(target_dir, filter="data")
-                    except TypeError:
-                        tar.extractall(target_dir)
-                folder_name = self._manifest.get("filename", "decoded")
-                self._resolved_output_path = str(target_dir / Path(folder_name).name)
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                    zf.extractall(out_dir)
+                folder = self._manifest.get("filename", "decoded")
+                self._resolved_output_path = str(out_dir / Path(folder).stem)
                 return
-            except (tarfile.TarError, OSError) as e:
-                self._extract_error = str(e)
+            except (zipfile.BadZipFile, OSError):
+                pass
 
-        out = Path(self.resolve_output_path())
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(data)
+        # Fallback: tar archive (Python legacy sender).
+        try:
+            with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
+                try:
+                    tar.extractall(out_dir, filter="data")
+                except TypeError:
+                    tar.extractall(out_dir)
+            folder = self._manifest.get("filename", "decoded")
+            self._resolved_output_path = str(out_dir / Path(folder).name)
+        except (tarfile.TarError, OSError) as e:
+            self._extract_error = str(e)
