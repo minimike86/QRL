@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0d0d0d">
+<title>QRL Web — Multi-QR Sender (Experimental)</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: #0d0d0d; }
+  body { font-family: 'Courier New', monospace; background: #0d0d0d; color: #e0e0e0; min-height: 100vh; }
+
+  /* ── Two-column layout ──────────────────────────────────────────────────── */
+  .layout { display: flex; flex-direction: column; min-height: 100vh; }
+
+  .controls { padding: max(20px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) 20px max(20px, env(safe-area-inset-left)); }
+
+  .display { display: flex; flex-direction: column; }
+
+  @media (min-width: 860px) {
+    .layout { flex-direction: row; }
+    .controls {
+      width: 400px; min-width: 400px; flex-shrink: 0;
+      padding: 36px 32px;
+      padding-left: max(32px, env(safe-area-inset-left));
+      border-right: 1px solid #161616;
+      overflow-y: auto; max-height: 100vh;
+      position: sticky; top: 0;
+      z-index: 1;
+    }
+    .display {
+      flex: 1; align-items: center; justify-content: center;
+      min-height: 100vh; padding: 40px;
+      padding-right: max(40px, env(safe-area-inset-right));
+      background: #090909; overflow: auto;
+    }
+  }
+
+  /* ── Typography ─────────────────────────────────────────────────────────── */
+  h1 { color: #00ff88; font-size: 1.4rem; letter-spacing: 0.1em; margin-bottom: 2px; }
+  nav { color: #555; font-size: 0.8rem; margin-bottom: 12px; }
+  nav a { color: #00ff88; text-decoration: none; padding: 4px 0; display: inline-block; }
+
+  /* ── Experimental badge ─────────────────────────────────────────────────── */
+  .exp-badge {
+    display: inline-block; background: #1a0a00; border: 1px solid #cc8800;
+    color: #cc8800; border-radius: 4px; font-size: 0.65rem; letter-spacing: 0.12em;
+    padding: 2px 8px; margin-bottom: 14px;
+  }
+  .exp-note {
+    background: #111; border: 1px solid #222; border-radius: 6px;
+    padding: 10px 14px; font-size: 0.72rem; color: #666; line-height: 1.55;
+    margin-bottom: 16px;
+  }
+  .exp-note strong { color: #888; }
+
+  /* ── Buttons ────────────────────────────────────────────────────────────── */
+  .pick-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  button {
+    font-family: 'Courier New', monospace; border: none; padding: 10px 20px;
+    border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: bold;
+    transition: opacity 0.15s; min-height: 44px; touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent; user-select: none;
+  }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-primary   { background: #00ff88; color: #000; }
+  .btn-secondary { background: #2a2a2a; color: #e0e0e0; border: 1px solid #333; }
+  .btn-danger    { background: #cc3333; color: #fff; }
+  .btn-warn      { background: #cc8800; color: #fff; }
+
+  /* ── File info ──────────────────────────────────────────────────────────── */
+  .file-info { background: #111; border: 1px solid #1e1e1e; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; font-size: 0.82rem; line-height: 1.7; }
+  .file-info .fname { color: #00ff88; font-size: 0.95rem; }
+
+  /* ── Settings ───────────────────────────────────────────────────────────── */
+  .settings { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 16px; }
+  .setting { display: flex; flex-direction: column; gap: 4px; position: relative; }
+
+  .setting > .lbl {
+    font-size: 0.68rem; color: #555; letter-spacing: 0.1em;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .hint-badge {
+    color: #2a2a2a; border: 1px solid #2a2a2a; border-radius: 50%;
+    width: 13px; height: 13px; font-size: 0.6em; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex-shrink: 0; transition: color 0.15s, border-color 0.15s; cursor: help;
+  }
+
+  .setting input, .setting select {
+    background: #1a1a1a; color: #e0e0e0; border: 1px solid #2a2a2a;
+    padding: 10px; border-radius: 5px;
+    font-family: 'Courier New', monospace; font-size: max(16px, 0.85rem);
+    width: 110px; min-height: 44px;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
+
+  .setting-hint {
+    position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 100;
+    background: #141414; border: 1px solid #2a2a2a; border-radius: 6px;
+    padding: 9px 13px; font-size: 0.7rem; color: #888; line-height: 1.55;
+    width: 240px; pointer-events: none; display: none;
+    letter-spacing: 0; font-weight: normal;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.7);
+  }
+
+  @media (hover: hover) {
+    .setting:hover .setting-hint { display: block; }
+    .setting:hover .hint-badge { color: #666; border-color: #666; }
+    .setting:nth-child(even) .setting-hint { left: auto; right: 0; }
+  }
+
+  /* ── Status & actions ───────────────────────────────────────────────────── */
+  .status { font-size: 0.8rem; color: #ffaa00; min-height: 1.2em; margin-bottom: 12px; }
+  .action-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+
+  /* ── QR display ─────────────────────────────────────────────────────────── */
+  .qr-placeholder {
+    display: none; flex-direction: column; align-items: center;
+    justify-content: center; gap: 20px; text-align: center; width: 100%;
+  }
+  @media (min-width: 860px) { .qr-placeholder { display: flex; } }
+
+  .ph-grid { display: grid; grid-template-columns: repeat(7, 13px); gap: 3px; opacity: 0.06; }
+  .ph-grid span { display: block; width: 13px; height: 13px; background: #fff; border-radius: 2px; }
+  .ph-grid span.g { background: transparent; }
+  .qr-placeholder p { font-size: 0.72rem; color: #222; line-height: 1.7; max-width: 240px; }
+
+  .qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
+
+  /* Dynamic QR grid — columns set via JS */
+  #qrGrid { display: grid; gap: 10px; justify-content: center; }
+
+  .qr-cell {
+    border: 5px solid #fff; border-radius: 4px;
+    background: #fff; display: block;
+  }
+
+  .chunk-label { font-size: 0.9rem; color: #888; letter-spacing: 0.05em; margin-top: 4px; }
+  .chunk-label span { color: #00ff88; font-weight: bold; }
+
+  /* ── Stats bar — 6 stats, wraps to two rows ─────────────────────────────── */
+  .stats-bar {
+    display: flex; gap: 20px 28px; flex-wrap: wrap;
+    background: #111; border: 1px solid #1a1a1a;
+    border-radius: 8px; padding: 14px 18px; width: 100%;
+  }
+  .stat { display: flex; flex-direction: column; gap: 3px; min-width: 60px; }
+  .stat-val { font-size: 1.3rem; color: #00ff88; font-weight: bold; }
+  .stat-lbl { font-size: 0.65rem; color: #555; letter-spacing: 0.1em; }
+
+  /* Throughput gets a slightly muted accent since it's derived */
+  #sThroughput { color: #00cc6a; }
+
+  .progress-bar { width: 100%; height: 6px; background: #1a1a1a; border-radius: 3px; overflow: hidden; }
+  .progress-fill { height: 100%; background: #00ff88; transition: width 0.3s; }
+
+  /* ── Utilities ──────────────────────────────────────────────────────────── */
+  .hidden { display: none !important; }
+
+  @keyframes qr-pulse {
+    0%   { box-shadow: 0 0 0 0   rgba(0,255,136,0.5); }
+    100% { box-shadow: 0 0 0 16px rgba(0,255,136,0);  }
+  }
+  .qr-cell.qr-new { animation: qr-pulse 0.28s ease-out; }
+
+  /* ── Mobile ─────────────────────────────────────────────────────────────── */
+  @media (max-width: 540px) {
+    .settings { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .setting input, .setting select { width: 100%; }
+    .stats-bar { gap: 14px; }
+    .stat-val { font-size: 1.1rem; }
+    .action-row button { flex: 1; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- ── Controls sidebar ───────────────────────────────────────────────── -->
+  <aside class="controls">
+    <h1>QRL WEB — MULTI-QR</h1>
+    <nav><a href="index.html">← Home</a> &nbsp;|&nbsp; <a href="sender.html">Standard Sender</a></nav>
+
+    <div class="exp-badge">EXPERIMENTAL</div>
+
+    <div class="exp-note">
+      Displays <strong>multiple QR codes simultaneously</strong>, multiplying effective bandwidth by the grid size.
+      Requires the <strong>Python QRL client</strong> — the web receiver only processes one QR per frame.
+    </div>
+
+    <div class="pick-row">
+      <button class="btn-primary" onclick="document.getElementById('fileInput').click()">Select File</button>
+      <button class="btn-secondary" onclick="document.getElementById('folderInput').click()">Select Folder</button>
+    </div>
+    <input type="file" id="fileInput" class="hidden">
+    <input type="file" id="folderInput" class="hidden" webkitdirectory multiple>
+
+    <div id="fileInfo" class="file-info hidden"></div>
+
+    <div class="settings">
+
+      <div class="setting">
+        <div class="lbl">CHUNK SIZE (BYTES) <span class="hint-badge">?</span></div>
+        <input type="number" id="chunkSize" value="600" min="100" max="1400" step="50" inputmode="numeric">
+        <div class="setting-hint">Payload bytes per QR frame. Smaller = more reliable codes; larger = fewer total frames. 400–600 B suits most setups. Reduce if codes fail to scan.</div>
+      </div>
+
+      <div class="setting">
+        <div class="lbl">FPS <span class="hint-badge">?</span></div>
+        <input type="number" id="fps" value="3" min="1" max="30" step="1" inputmode="numeric">
+        <div class="setting-hint">Frames (sets of QRs) per second. Each frame sends numQR chunks simultaneously. 3–5 fps is reliable; higher only if the receiver keeps up.</div>
+      </div>
+
+      <div class="setting">
+        <div class="lbl">ERROR CORRECTION <span class="hint-badge">?</span></div>
+        <select id="ecLevel">
+          <option value="L" selected>L — 7%</option>
+          <option value="M">M — 15%</option>
+          <option value="Q">Q — 25%</option>
+          <option value="H">H — 30%</option>
+        </select>
+        <div class="setting-hint">Reed-Solomon redundancy per QR. Higher levels recover more noise but shrink payload capacity. Use L in clean conditions; M–H for noisy captures.</div>
+      </div>
+
+      <div class="setting">
+        <div class="lbl">QR SIZE PER CODE (PX) <span class="hint-badge">?</span></div>
+        <input type="number" id="qrSize" value="300" min="100" max="600" step="20" inputmode="numeric">
+        <div class="setting-hint">Pixel size of each individual QR code. Total display width = size × columns. Reduce for larger grids so the overall display fits the screen.</div>
+      </div>
+
+      <div class="setting">
+        <div class="lbl">QR GRID <span class="hint-badge">?</span></div>
+        <select id="gridSelect">
+          <option value="1x1">1×1 — 1 code</option>
+          <option value="2x1">2×1 — 2 codes</option>
+          <option value="2x2" selected>2×2 — 4 codes</option>
+          <option value="3x3">3×3 — 9 codes</option>
+        </select>
+        <div class="setting-hint">Number of QR codes shown simultaneously. Each extra code adds one independent packet per frame. Requires the Python client — reduce QR size for larger grids.</div>
+      </div>
+
+      <div class="setting">
+        <div class="lbl">FRAMES PER CHUNK <span class="hint-badge">?</span></div>
+        <input type="number" id="chunkRepeat" value="1" min="1" max="30" step="1" inputmode="numeric">
+        <div class="setting-hint">How many consecutive frames each batch is held before advancing. Increase if the receiver misses batches. ETA scales proportionally.</div>
+      </div>
+
+      <div class="setting">
+        <div class="lbl">FOUNTAIN MODE <span class="hint-badge">?</span></div>
+        <label style="display:flex;align-items:center;gap:8px;color:#e0e0e0;font-size:0.85rem;margin-top:2px;cursor:pointer">
+          <input type="checkbox" id="fountainToggle" checked style="width:auto;cursor:pointer"> On
+        </label>
+        <div class="setting-hint">Recommended for multi-QR. Generates an infinite stream of unique XOR-coded packets — no manual replay needed. The receiver decodes from any sufficient subset.</div>
+      </div>
+
+    </div><!-- .settings -->
+
+    <div class="status" id="statusMsg"></div>
+
+    <div class="action-row hidden" id="actionRow">
+      <button class="btn-primary" id="startBtn" onclick="startTransfer()">Start Transfer</button>
+      <button class="btn-warn hidden" id="pauseBtn" onclick="togglePause()">Pause</button>
+      <button class="btn-danger hidden" id="stopBtn" onclick="stopTransfer()">Stop</button>
+    </div>
+
+  </aside>
+
+  <!-- ── QR display panel ────────────────────────────────────────────────── -->
+  <main class="display">
+
+    <div class="qr-placeholder" id="qrPlaceholder">
+      <div class="ph-grid" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+        <span></span><span class="g"></span><span class="g"></span><span class="g"></span><span class="g"></span><span class="g"></span><span></span>
+        <span></span><span class="g"></span><span></span><span></span><span></span><span class="g"></span><span></span>
+        <span></span><span class="g"></span><span></span><span></span><span></span><span class="g"></span><span></span>
+        <span></span><span class="g"></span><span></span><span></span><span></span><span class="g"></span><span></span>
+        <span></span><span class="g"></span><span class="g"></span><span class="g"></span><span class="g"></span><span class="g"></span><span></span>
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <p>Select a file and press<br>Start Transfer —<br>a grid of QR codes appears here.<br><br>Point the Python QRL client<br>camera at this screen.</p>
+    </div>
+
+    <div class="qr-wrap hidden" id="qrSection">
+      <div id="qrGrid"></div>
+      <div class="chunk-label" id="chunkLabel">—</div>
+      <div class="stats-bar">
+        <div class="stat"><div class="stat-val" id="sFrame">—</div><div class="stat-lbl">FRAME</div></div>
+        <div class="stat"><div class="stat-val" id="sTotal">—</div><div class="stat-lbl">TOTAL CHUNKS</div></div>
+        <div class="stat"><div class="stat-val" id="sCodesFrame">4</div><div class="stat-lbl">CODES/FRAME</div></div>
+        <div class="stat"><div class="stat-val" id="sCycles">0</div><div class="stat-lbl">CYCLES</div></div>
+        <div class="stat"><div class="stat-val" id="sFps">—</div><div class="stat-lbl">ACTUAL FPS</div></div>
+        <div class="stat"><div class="stat-val" id="sThroughput">—</div><div class="stat-lbl">THROUGHPUT</div></div>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="progFill" style="width:0%"></div></div>
+    </div>
+
+  </main>
+</div>
+
+<script src="vendor/qrcode.min.js"></script>
+<script src="vendor/pako.min.js"></script>
+<script src="vendor/jszip.min.js"></script>
+<script src="multi-qr-sender.js"></script>
+</body>
+</html>
