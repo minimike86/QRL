@@ -80,10 +80,10 @@ function recoverSourceChunk(startIdx, startPayload) {
 
 // ── Decoder state ────────────────────────────────────────────────────────────
 let manifest = null;
-let received = new Map();   // sequence → Uint8Array payload
+let received = new Map();
 let expectedTotal = 0;
 let complete = false;
-let assembledData = null;   // final Uint8Array after reassembly
+let assembledData = null;
 
 // Scan stats
 let frameCount = 0;
@@ -97,43 +97,92 @@ let fountainPackets = [];
 let sourceRecovered = new Map();
 let seenSeeds = new Set();
 
-// Camera
+// Capture / stream state
+let sourceMode = 'camera';  // 'camera' | 'screen'
 let mediaStream = null;
 let rafId = null;
 let scanning = false;
 
-// ── Camera setup ─────────────────────────────────────────────────────────────
+// Crop state
+let cropRect = null;       // { x, y, w, h } in native video coords, or null
+let cropPicking = false;
+let cropDragStart = null;  // native video point where drag started
+
+// ── Source selection ──────────────────────────────────────────────────────────
+function setSource(mode) {
+  if (scanning) return;
+  sourceMode = mode;
+  const isScreen = mode === 'screen';
+  document.getElementById('srcCamera').classList.toggle('active', !isScreen);
+  document.getElementById('srcScreen').classList.toggle('active', isScreen);
+  document.getElementById('cameraSelect').classList.toggle('hidden', isScreen);
+  document.getElementById('screenNote').classList.toggle('hidden', !isScreen);
+  document.getElementById('startBtn').textContent = isScreen ? 'Start Screen' : 'Start Camera';
+}
+
+function startCapture() {
+  if (sourceMode === 'screen') startScreenCapture();
+  else startCamera();
+}
+
+// ── Camera / Screen setup ─────────────────────────────────────────────────────
 async function startCamera() {
   try {
     await populateCameraSelect();
-
     const deviceId = document.getElementById('cameraSelect').value;
     const constraints = {
       video: deviceId
         ? { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
         : { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
     };
-
     mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
     const video = document.getElementById('video');
     video.srcObject = mediaStream;
     await new Promise(res => { video.onloadedmetadata = res; });
     video.play();
-
-    document.getElementById('videoWrap').classList.remove('hidden');
-    document.getElementById('cameraPlaceholder')?.classList.add('hidden');
-    document.getElementById('statsRow').classList.remove('hidden');
-    document.getElementById('progressSection').classList.remove('hidden');
-    document.getElementById('startBtn').classList.add('hidden');
-    document.getElementById('stopBtn').classList.remove('hidden');
-    document.getElementById('resetBtn').classList.remove('hidden');
-
+    _showCaptureUI();
     scanning = true;
     setStatus('Scanning for manifest QR…', 'warn');
     rafId = requestAnimationFrame(scanLoop);
   } catch (err) {
     setStatus('Camera error: ' + err.message, 'err');
   }
+}
+
+async function startScreenCapture() {
+  try {
+    mediaStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { cursor: 'never', frameRate: { ideal: 10, max: 30 } },
+      audio: false,
+    });
+    const video = document.getElementById('video');
+    video.srcObject = mediaStream;
+    await new Promise(res => { video.onloadedmetadata = res; });
+    video.play();
+    // Stop scanning automatically if the user ends the share via the browser UI
+    mediaStream.getVideoTracks()[0].addEventListener('ended', () => stopCamera());
+    _showCaptureUI();
+    scanning = true;
+    setStatus('Screen captured — scanning for manifest QR…', 'warn');
+    rafId = requestAnimationFrame(scanLoop);
+  } catch (err) {
+    if (err.name === 'NotAllowedError') {
+      setStatus('Screen capture cancelled.', 'idle');
+    } else {
+      setStatus('Screen capture error: ' + err.message, 'err');
+    }
+  }
+}
+
+function _showCaptureUI() {
+  document.getElementById('videoWrap').classList.remove('hidden');
+  document.getElementById('cameraPlaceholder')?.classList.add('hidden');
+  document.getElementById('statsRow').classList.remove('hidden');
+  document.getElementById('progressSection').classList.remove('hidden');
+  document.getElementById('startBtn').classList.add('hidden');
+  document.getElementById('stopBtn').classList.remove('hidden');
+  document.getElementById('resetBtn').classList.remove('hidden');
+  document.getElementById('cropBtn').classList.remove('hidden');
 }
 
 async function populateCameraSelect() {
@@ -156,12 +205,15 @@ function stopCamera() {
   scanning = false;
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+  if (cropPicking) stopCropPick();
   document.getElementById('video').srcObject = null;
   document.getElementById('videoWrap').classList.add('hidden');
   document.getElementById('cameraPlaceholder')?.classList.remove('hidden');
   document.getElementById('startBtn').classList.remove('hidden');
   document.getElementById('stopBtn').classList.add('hidden');
-  if (!complete) setStatus('Camera stopped.', 'idle');
+  document.getElementById('cropBtn').classList.add('hidden');
+  document.getElementById('clearCropBtn').classList.add('hidden');
+  if (!complete) setStatus('Capture stopped.', 'idle');
 }
 
 async function switchCamera(deviceId) {
@@ -184,6 +236,156 @@ async function switchCamera(deviceId) {
   }
 }
 
+// ── Crop region selection ─────────────────────────────────────────────────────
+function getVideoPoint(e) {
+  const video = document.getElementById('video');
+  const rect = video.getBoundingClientRect();
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh) return { x: 0, y: 0 };
+
+  let clientX, clientY;
+  if (e.touches && e.touches.length > 0) {
+    clientX = e.touches[0].clientX; clientY = e.touches[0].clientY;
+  } else if (e.changedTouches && e.changedTouches.length > 0) {
+    clientX = e.changedTouches[0].clientX; clientY = e.changedTouches[0].clientY;
+  } else {
+    clientX = e.clientX; clientY = e.clientY;
+  }
+
+  // object-fit: cover — the video is scaled so it fills the element, potentially clipping sides.
+  // scale = max(display/native) so that the smaller dimension exactly fills.
+  const scale = Math.max(rect.width / vw, rect.height / vh);
+  const ox = (rect.width - vw * scale) / 2;   // negative when video is wider than element
+  const oy = (rect.height - vh * scale) / 2;
+  const x = Math.round((clientX - rect.left - ox) / scale);
+  const y = Math.round((clientY - rect.top - oy) / scale);
+  return { x: Math.max(0, Math.min(vw, x)), y: Math.max(0, Math.min(vh, y)) };
+}
+
+function _videoToDisplayCoords(vx, vy) {
+  // Returns position in pixels relative to .video-wrap (the overlay parent).
+  // Since the video is width:100% with no wrap padding it shares the wrap origin.
+  const video = document.getElementById('video');
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  const dw = video.clientWidth;
+  const dh = video.clientHeight;
+  const scale = Math.max(dw / vw, dh / vh);
+  const ox = (dw - vw * scale) / 2;
+  const oy = (dh - vh * scale) / 2;
+  return { x: vx * scale + ox, y: vy * scale + oy };
+}
+
+function _updateSelectionBox(start, cur) {
+  const p1 = _videoToDisplayCoords(start.x, start.y);
+  const p2 = _videoToDisplayCoords(cur.x, cur.y);
+  const sel = document.getElementById('cropSelection');
+  sel.style.left   = Math.min(p1.x, p2.x) + 'px';
+  sel.style.top    = Math.min(p1.y, p2.y) + 'px';
+  sel.style.width  = Math.abs(p2.x - p1.x) + 'px';
+  sel.style.height = Math.abs(p2.y - p1.y) + 'px';
+  sel.style.display = 'block';
+}
+
+function updateCropActiveDisplay() {
+  if (!cropRect) return;
+  const p1 = _videoToDisplayCoords(cropRect.x, cropRect.y);
+  const p2 = _videoToDisplayCoords(cropRect.x + cropRect.w, cropRect.y + cropRect.h);
+  const el = document.getElementById('cropActive');
+  el.style.left   = p1.x + 'px';
+  el.style.top    = p1.y + 'px';
+  el.style.width  = (p2.x - p1.x) + 'px';
+  el.style.height = (p2.y - p1.y) + 'px';
+  el.style.display = 'block';
+}
+
+function startCropPick() {
+  if (!scanning) return;
+  cropPicking = true;
+  cropRect = null;
+  document.getElementById('cropActive').style.display = 'none';
+  document.getElementById('clearCropBtn').classList.add('hidden');
+  document.getElementById('cropBtn').textContent = 'Cancel';
+  document.getElementById('cropOverlay').classList.add('picking');
+  setStatus('Drag on the video to select a scan region.', 'warn');
+}
+
+function stopCropPick() {
+  cropPicking = false;
+  cropDragStart = null;
+  document.getElementById('cropOverlay').classList.remove('picking');
+  document.getElementById('cropSelection').style.display = 'none';
+  document.getElementById('cropBtn').textContent = 'Crop Region';
+}
+
+function clearCrop() {
+  stopCropPick();
+  cropRect = null;
+  document.getElementById('cropActive').style.display = 'none';
+  document.getElementById('clearCropBtn').classList.add('hidden');
+  setStatus('Crop cleared — scanning full frame.', 'warn');
+}
+
+function _finalizeCrop(start, end) {
+  const x = Math.min(start.x, end.x);
+  const y = Math.min(start.y, end.y);
+  const w = Math.abs(end.x - start.x);
+  const h = Math.abs(end.y - start.y);
+  stopCropPick();
+  if (w < 10 || h < 10) {
+    setStatus('Selection too small — try again.', 'warn');
+    return;
+  }
+  cropRect = { x, y, w, h };
+  document.getElementById('clearCropBtn').classList.remove('hidden');
+  updateCropActiveDisplay();
+  setStatus(`Crop: ${w}×${h} px — scanning region only.`, 'ok');
+}
+
+// ── Crop overlay event listeners ─────────────────────────────────────────────
+(function attachCropEvents() {
+  const overlay = document.getElementById('cropOverlay');
+
+  overlay.addEventListener('mousedown', e => {
+    if (!cropPicking) return;
+    e.preventDefault();
+    cropDragStart = getVideoPoint(e);
+  });
+
+  overlay.addEventListener('mousemove', e => {
+    if (!cropPicking || !cropDragStart) return;
+    e.preventDefault();
+    _updateSelectionBox(cropDragStart, getVideoPoint(e));
+  });
+
+  overlay.addEventListener('mouseup', e => {
+    if (!cropPicking || !cropDragStart) return;
+    e.preventDefault();
+    _finalizeCrop(cropDragStart, getVideoPoint(e));
+  });
+
+  overlay.addEventListener('touchstart', e => {
+    if (!cropPicking) return;
+    e.preventDefault();
+    cropDragStart = getVideoPoint(e);
+  }, { passive: false });
+
+  overlay.addEventListener('touchmove', e => {
+    if (!cropPicking || !cropDragStart) return;
+    e.preventDefault();
+    _updateSelectionBox(cropDragStart, getVideoPoint(e));
+  }, { passive: false });
+
+  overlay.addEventListener('touchend', e => {
+    if (!cropPicking || !cropDragStart) return;
+    e.preventDefault();
+    _finalizeCrop(cropDragStart, getVideoPoint(e));
+  }, { passive: false });
+})();
+
+window.addEventListener('resize', () => { if (cropRect) updateCropActiveDisplay(); });
+
 // ── Scan loop ────────────────────────────────────────────────────────────────
 function scanLoop() {
   if (!scanning) return;
@@ -191,11 +393,18 @@ function scanLoop() {
   const video = document.getElementById('video');
   const canvas = document.getElementById('capCanvas');
 
-  if (video.readyState === video.HAVE_ENOUGH_DATA) {
-    canvas.width  = video.videoWidth;
-    canvas.height = video.videoHeight;
+  if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0);
+
+    if (cropRect) {
+      canvas.width  = cropRect.w;
+      canvas.height = cropRect.h;
+      ctx.drawImage(video, cropRect.x, cropRect.y, cropRect.w, cropRect.h, 0, 0, cropRect.w, cropRect.h);
+    } else {
+      canvas.width  = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+    }
 
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     frameCount++;
@@ -207,8 +416,6 @@ function scanLoop() {
 
     const dot = document.getElementById('scanDot');
     if (code && code.data && code.data.length >= HEADER_SIZE) {
-      // Use code.data (jsQR UTF-8 decodes byte-mode QR, which round-trips correctly
-      // through charCodeAt & 0xFF regardless of how the sender library encoded the bytes)
       const bytes = new Uint8Array(code.data.length);
       for (let k = 0; k < code.data.length; k++) bytes[k] = code.data.charCodeAt(k) & 0xff;
       hitCount++;
@@ -300,14 +507,17 @@ function finalise() {
   complete = true;
   scanning = false;
   if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  if (cropPicking) stopCropPick();
   if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
   document.getElementById('video').srcObject = null;
   document.getElementById('videoWrap').classList.add('hidden');
   document.getElementById('cameraPlaceholder')?.classList.remove('hidden');
+  document.getElementById('cropBtn').classList.add('hidden');
+  document.getElementById('clearCropBtn').classList.add('hidden');
+  document.getElementById('cropActive').style.display = 'none';
 
   let combined;
   if (manifest?.fountain) {
-    // Reassemble from padded recovered source chunks — trim to actual data size
     const totalBytes = manifest.size;
     combined = new Uint8Array(totalBytes);
     let offset = 0;
@@ -319,7 +529,6 @@ function finalise() {
       offset += actualSize;
     }
   } else {
-    // Sequential: concatenate variable-length payloads
     const totalBytes = Array.from(received.values()).reduce((s, b) => s + b.length, 0);
     combined = new Uint8Array(totalBytes);
     let offset = 0;
@@ -344,7 +553,6 @@ function finalise() {
   document.getElementById('downloadBtn').classList.remove('hidden');
   setStatus(`✓ Transfer complete! ${fmtBytes(data.length)} ready.`, 'ok');
 
-  // Auto-download
   downloadFile();
 }
 
@@ -370,7 +578,6 @@ function showManifest(m) {
     `<div style="color:#555">EC: ${m.error_correction} &nbsp;·&nbsp; ${m.is_directory ? 'folder (zip)' : 'file'} &nbsp;·&nbsp; ETA: <span id="rxEta">—</span></div>`;
   card.classList.remove('hidden');
 
-  // Reveal chunk map and progress immediately so the user can see the empty grid
   document.getElementById('progressSection').classList.remove('hidden');
   document.getElementById('chunkMap').classList.remove('hidden');
   updateChunkMap();
@@ -464,7 +671,10 @@ function setStatus(msg, cls = 'idle') {
 }
 
 function resetState() {
-  stopCamera();
+  stopCamera();  // also calls stopCropPick if picking is active
+  cropRect = null;
+  document.getElementById('cropActive').style.display = 'none';
+  document.getElementById('clearCropBtn').classList.add('hidden');
   manifest = null;
   received = new Map();
   expectedTotal = 0;
@@ -482,7 +692,7 @@ function resetState() {
   document.getElementById('chunkMap').classList.add('hidden');
   document.getElementById('statsRow').classList.add('hidden');
   updateProgress();
-  setStatus('Reset. Press Start Camera to begin again.', 'idle');
+  setStatus('Reset. Press Start to begin again.', 'idle');
   document.getElementById('startBtn').classList.remove('hidden');
   document.getElementById('stopBtn').classList.add('hidden');
 }
@@ -494,8 +704,16 @@ function fmtBytes(n) {
   return (n / 1048576).toFixed(2) + ' MB';
 }
 
+// ── Initialisation ────────────────────────────────────────────────────────────
 document.getElementById('cameraSelect').addEventListener('change', function() {
-  if (mediaStream) switchCamera(this.value);
+  if (mediaStream && sourceMode === 'camera') switchCamera(this.value);
 });
+
+// Disable Screen tab if getDisplayMedia is not available (older browsers, some mobile)
+if (!navigator.mediaDevices?.getDisplayMedia) {
+  const btn = document.getElementById('srcScreen');
+  btn.disabled = true;
+  btn.title = 'Screen capture is not supported in this browser';
+}
 
 populateCameraSelect();

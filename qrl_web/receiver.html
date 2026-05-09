@@ -150,6 +150,42 @@
     .stat-val { font-size: 1.1rem; }
     .action-row button { flex: 1; }
   }
+
+  /* ── Source toggle ──────────────────────────────────────────────────────── */
+  .source-toggle {
+    display: flex; border: 1px solid #2a2a2a; border-radius: 6px;
+    overflow: hidden; margin-bottom: 12px;
+  }
+  .src-btn {
+    flex: 1; background: transparent; color: #555; border: none; border-radius: 0;
+    padding: 9px 12px; font-family: 'Courier New', monospace;
+    font-size: 0.78rem; font-weight: bold; cursor: pointer;
+    transition: background 0.15s, color 0.15s; min-height: 40px;
+  }
+  .src-btn.active { background: #1a1a1a; color: #00ff88; }
+  .src-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* ── Screen note ────────────────────────────────────────────────────────── */
+  .screen-note {
+    font-size: 0.72rem; color: #555; margin-bottom: 10px;
+    line-height: 1.55; padding: 8px 12px;
+    background: #111; border: 1px solid #1e1e1e; border-radius: 6px;
+  }
+
+  /* ── Crop overlay ───────────────────────────────────────────────────────── */
+  .crop-overlay { position: absolute; inset: 0; z-index: 5; pointer-events: none; }
+  .crop-overlay.picking { pointer-events: all; cursor: crosshair; }
+
+  #cropSelection {
+    position: absolute; border: 2px dashed #00ff88;
+    box-sizing: border-box; pointer-events: none; display: none;
+  }
+  #cropActive {
+    position: absolute; box-sizing: border-box; pointer-events: none;
+    border: 2px solid #00ff88;
+    box-shadow: 0 0 0 9999px rgba(0,0,0,0.45);
+    display: none; z-index: 4;
+  }
 </style>
 </head>
 <body>
@@ -160,12 +196,23 @@
     <h1>QRL WEB — RECEIVER</h1>
     <nav><a href="index.html">← Home</a> &nbsp;|&nbsp; <a href="sender.html">Open Sender →</a></nav>
 
+    <div class="source-toggle" id="sourceToggle">
+      <button class="src-btn active" id="srcCamera" onclick="setSource('camera')">Camera</button>
+      <button class="src-btn" id="srcScreen" onclick="setSource('screen')">Screen</button>
+    </div>
+
     <select id="cameraSelect" class="camera-select hidden"></select>
 
+    <div class="screen-note hidden" id="screenNote">
+      <strong style="color:#e0e0e0">Screen capture</strong> — Browser's native picker lets you choose a monitor, window, or tab. On mobile, tab or full-screen sharing depends on the browser.
+    </div>
+
     <div class="action-row">
-      <button class="btn-primary" id="startBtn" onclick="startCamera()">Start Camera</button>
+      <button class="btn-primary" id="startBtn" onclick="startCapture()">Start Camera</button>
       <button class="btn-danger hidden" id="stopBtn" onclick="stopCamera()">Stop</button>
       <button class="btn-secondary hidden" id="resetBtn" onclick="resetState()">Reset / New Transfer</button>
+      <button class="btn-secondary hidden" id="cropBtn" onclick="startCropPick()">Crop Region</button>
+      <button class="btn-secondary hidden" id="clearCropBtn" onclick="clearCrop()">Clear Crop</button>
     </div>
 
     <div class="status idle" id="statusMsg">Press Start Camera to begin scanning.</div>
@@ -210,6 +257,10 @@
     <div class="video-wrap hidden" id="videoWrap">
       <video id="video" autoplay playsinline muted></video>
       <canvas id="capCanvas" class="hidden"></canvas>
+      <div class="crop-overlay" id="cropOverlay">
+        <div id="cropSelection"></div>
+        <div id="cropActive"></div>
+      </div>
       <div class="scan-overlay">
         <span class="scan-dot" id="scanDot"></span><span id="scanTxt">waiting…</span>
       </div>
