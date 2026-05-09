@@ -142,5 +142,6 @@ pytest tests/
 
 ## Similar projects
 
-- [QRxfil](https://github.com/OverkillGuy/qrxfil) — QR-code-based file transfer, outputs a static PDF.
-- [QRExfil](https://github.com/Shell-Company/QRExfil) — QR code transfer with animated GIF output.
+- [txqr](https://github.com/divan/txqr)
+- [QRxfil](https://github.com/OverkillGuy/qrxfil) 
+- [QRExfil](https://github.com/Shell-Company/QRExfil)
