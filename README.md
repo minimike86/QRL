@@ -11,6 +11,7 @@ No network connection, no clipboard, and no agent is needed on the receiving end
 `qrl_web/` is a browser-only implementation — no Python, no install, no build step.
 
 **Hosted on GitHub Pages:**
+- Home: https://minimike86.github.io/QRL/qrl_web
 - Sender: https://minimike86.github.io/QRL/qrl_web/sender.html
 - Receiver: https://minimike86.github.io/QRL/qrl_web/receiver.html
 

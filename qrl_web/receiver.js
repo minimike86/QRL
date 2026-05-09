@@ -206,25 +206,16 @@ function scanLoop() {
     });
 
     const dot = document.getElementById('scanDot');
-    if (code) {
-      // Prefer binaryData; fall back to converting the Latin-1 data string byte-by-byte
-      let bytes = null;
-      if (code.binaryData && code.binaryData.length >= HEADER_SIZE) {
-        bytes = new Uint8Array(code.binaryData);
-      } else if (code.data && code.data.length >= HEADER_SIZE) {
-        bytes = new Uint8Array(code.data.length);
-        for (let k = 0; k < code.data.length; k++) bytes[k] = code.data.charCodeAt(k) & 0xff;
-      }
-      if (bytes && bytes.length >= HEADER_SIZE) {
-        hitCount++;
-        document.getElementById('sHits').textContent = hitCount;
-        dot.classList.add('active');
-        document.getElementById('scanTxt').textContent = 'QR found';
-        processChunk(bytes);
-      } else {
-        dot.classList.remove('active');
-        document.getElementById('scanTxt').textContent = 'scanning…';
-      }
+    if (code && code.data && code.data.length >= HEADER_SIZE) {
+      // Use code.data (jsQR UTF-8 decodes byte-mode QR, which round-trips correctly
+      // through charCodeAt & 0xFF regardless of how the sender library encoded the bytes)
+      const bytes = new Uint8Array(code.data.length);
+      for (let k = 0; k < code.data.length; k++) bytes[k] = code.data.charCodeAt(k) & 0xff;
+      hitCount++;
+      document.getElementById('sHits').textContent = hitCount;
+      dot.classList.add('active');
+      document.getElementById('scanTxt').textContent = 'QR found';
+      processChunk(bytes);
     } else {
       dot.classList.remove('active');
       document.getElementById('scanTxt').textContent = 'scanning…';
