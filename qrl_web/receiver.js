@@ -206,12 +206,25 @@ function scanLoop() {
     });
 
     const dot = document.getElementById('scanDot');
-    if (code && code.binaryData && code.binaryData.length >= HEADER_SIZE) {
-      hitCount++;
-      document.getElementById('sHits').textContent = hitCount;
-      dot.classList.add('active');
-      document.getElementById('scanTxt').textContent = 'QR found';
-      processChunk(new Uint8Array(code.binaryData));
+    if (code) {
+      // Prefer binaryData; fall back to converting the Latin-1 data string byte-by-byte
+      let bytes = null;
+      if (code.binaryData && code.binaryData.length >= HEADER_SIZE) {
+        bytes = new Uint8Array(code.binaryData);
+      } else if (code.data && code.data.length >= HEADER_SIZE) {
+        bytes = new Uint8Array(code.data.length);
+        for (let k = 0; k < code.data.length; k++) bytes[k] = code.data.charCodeAt(k) & 0xff;
+      }
+      if (bytes && bytes.length >= HEADER_SIZE) {
+        hitCount++;
+        document.getElementById('sHits').textContent = hitCount;
+        dot.classList.add('active');
+        document.getElementById('scanTxt').textContent = 'QR found';
+        processChunk(bytes);
+      } else {
+        dot.classList.remove('active');
+        document.getElementById('scanTxt').textContent = 'scanning…';
+      }
     } else {
       dot.classList.remove('active');
       document.getElementById('scanTxt').textContent = 'scanning…';
@@ -233,7 +246,10 @@ function processChunk(bytes) {
         expectedTotal = manifest.total_chunks;
         showManifest(manifest);
         updateProgress();
-      } catch (_) {}
+      } catch (e) {
+        console.error('[QRL] Manifest processing error:', e);
+        setStatus('Manifest error: ' + e.message, 'err');
+      }
     }
     return;
   }
