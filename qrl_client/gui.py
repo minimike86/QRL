@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from qrl_server.ui_theme import (
+from .ui_theme import (
     ACCENT,
     BG,
     BG_ELEVATED,

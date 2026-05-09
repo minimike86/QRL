@@ -1,11 +1,13 @@
 # Client
 
-The client captures the screen on a configurable interval, decodes every visible QR code in each frame, and reassembles the chunks into the original file.
+The Python client captures the screen on a configurable interval, decodes every visible QR code in each frame, and reassembles the chunks into the original file. It is fully compatible with the web sender — same wire format, same manifest, same fountain protocol.
 
 ## Launching
 
 ```bash
-# GUI
+# GUI (recommended)
+python qrl_gui.py
+# or
 python -m qrl_client --gui
 
 # Headless CLI
@@ -106,5 +108,7 @@ The preview runs on the main thread via `root.after` at a fixed 200 ms interval 
 - The chunk is stored in a dict keyed by `(stream_id, sequence)`.
 - When all `total_chunks` chunks for a stream are present the stream is complete.
 - If the manifest flagged `compressed = true`, the reassembled bytes are decompressed.
-- If `is_directory = true`, the bytes are unpacked as a tar archive into `<output_folder>/<filename>/`.
+- If `is_directory = true`, the bytes are unpacked into `<output_folder>/<filename>/`.
 - Otherwise the bytes are written directly to `<output_folder>/<filename>`.
+
+The client handles both sequential (stream_id = 0) and fountain (stream_id = 2) packets transparently, routing by the `fountain` field in the manifest. See [ARCHITECTURE.md](ARCHITECTURE.md) for the wire format and fountain decoding algorithm.

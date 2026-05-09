@@ -28,16 +28,12 @@ classifiers = [
 ]
 keywords = ["qr-code", "transfer", "security", "poc", "data-transfer"]
 dependencies = [
-    "qrcode[pil]>=7.4.2",
     "Pillow>=9.0.0",
     "opencv-python>=4.5.4",
     "numpy>=1.19.0",
     "pyzbar>=0.1.8",
-    "colorama>=0.4.4",
-    "tqdm>=4.62.0",
     "pyyaml>=6.0.3",
     "mss>=9.0.1",
-    "tkinterdnd2>=0.4.3",
 ]
 
 [project.urls]
@@ -47,10 +43,9 @@ Documentation = "https://github.com/minimike86/QRL/docs"
 "Source Code" = "https://github.com/minimike86/QRL"
 
 [tool.hatch.build.targets.wheel]
-packages = ["qrl_server", "qrl_client"]
+packages = ["qrl_client"]
 
 [project.scripts]
-qrl-server = "qrl_server.__main__:main"
 qrl-client = "qrl_client.__main__:main"
 
 [dependency-groups]

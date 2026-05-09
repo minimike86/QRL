@@ -1,25 +1,22 @@
 """
-Shared visual theme for QRL server and client GUIs.
+Shared visual theme for the QRL client GUI.
 
-Provides a small palette, font choices, and ttk style configuration so both
-apps look like part of the same product. Call `apply_theme(root)` once after
-creating the Tk root.
+Provides a small palette, font choices, and ttk style configuration.
+Call `apply_theme(root)` once after creating the Tk root.
 """
 
-import sys
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import ttk
 
 
 # --- Palette --------------------------------------------------------------
-# Calm slate-blue with subtle accents. WCAG AA contrast for foreground/bg.
-BG = "#1e2530"          # main window background
-BG_ELEVATED = "#2a3340"  # cards / panels
-BG_INPUT = "#36404f"     # entries / spinboxes
-FG = "#e6ecf2"           # primary text
-FG_MUTED = "#9aa6b8"     # secondary text / labels
-ACCENT = "#4a90e2"       # primary action / focus
+BG = "#1e2530"
+BG_ELEVATED = "#2a3340"
+BG_INPUT = "#36404f"
+FG = "#e6ecf2"
+FG_MUTED = "#9aa6b8"
+ACCENT = "#4a90e2"
 ACCENT_HOVER = "#5fa3ee"
 ACCENT_PRESSED = "#3978c4"
 SUCCESS = "#3ec19a"
@@ -43,7 +40,6 @@ def _pick_family(*candidates: str) -> str:
 
 
 def configure_fonts(root: tk.Tk) -> dict:
-    """Pick a clean sans family and return named font handles."""
     family = _pick_family("Segoe UI", "Inter", "SF Pro Text", "Helvetica Neue", "Arial")
     mono = _pick_family("Consolas", "JetBrains Mono", "Menlo", "Courier New")
 
@@ -55,7 +51,6 @@ def configure_fonts(root: tk.Tk) -> dict:
         "small": tkfont.Font(root=root, family=family, size=9),
         "mono": tkfont.Font(root=root, family=mono, size=10),
     }
-    # Also override Tk's defaults so untyped widgets pick up the family
     for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
         try:
             tkfont.nametofont(name).configure(family=family, size=10)
@@ -76,8 +71,6 @@ def apply_theme(root: tk.Tk) -> dict:
     root.configure(bg=BG)
 
     style = ttk.Style(root)
-    # 'clam' allows full color control on Windows; default 'vista' theme
-    # ignores most ttk style overrides.
     try:
         style.theme_use("clam")
     except tk.TclError:
@@ -97,13 +90,11 @@ def apply_theme(root: tk.Tk) -> dict:
     style.configure("H2.TLabel", background=BG, foreground=FG, font=fonts["h2"])
     style.configure("CardH2.TLabel", background=BG_ELEVATED, foreground=FG, font=fonts["h2"])
 
-    # Status pill labels — drawn as colored text
     style.configure("StatusIdle.TLabel", background=BG, foreground=STATUS_IDLE, font=fonts["body_bold"])
     style.configure("StatusRunning.TLabel", background=BG, foreground=STATUS_RUNNING, font=fonts["body_bold"])
     style.configure("StatusOk.TLabel", background=BG, foreground=STATUS_OK, font=fonts["body_bold"])
     style.configure("StatusError.TLabel", background=BG, foreground=STATUS_ERROR, font=fonts["body_bold"])
 
-    # Buttons
     style.configure("TButton", background=BG_ELEVATED, foreground=FG,
                     bordercolor=BORDER, padding=(12, 6), font=fonts["body"], borderwidth=1)
     style.map("TButton",
@@ -129,7 +120,6 @@ def apply_theme(root: tk.Tk) -> dict:
     style.configure("ChipActive.TButton", background=ACCENT, foreground="#ffffff",
                     bordercolor=ACCENT, padding=(10, 4), font=fonts["small"])
 
-    # Entries / spinboxes / combos
     style.configure("TEntry", fieldbackground=BG_INPUT, foreground=FG,
                     bordercolor=BORDER, insertcolor=FG, padding=4)
     style.map("TEntry", bordercolor=[("focus", ACCENT)])
@@ -146,7 +136,6 @@ def apply_theme(root: tk.Tk) -> dict:
               foreground=[("readonly", FG)],
               bordercolor=[("focus", ACCENT)])
 
-    # Checkbutton
     style.configure("TCheckbutton", background=BG, foreground=FG,
                     indicatorbackground=BG_INPUT, indicatorforeground=ACCENT,
                     focuscolor=BG, padding=4)
@@ -156,7 +145,6 @@ def apply_theme(root: tk.Tk) -> dict:
     style.configure("Card.TCheckbutton", background=BG_ELEVATED, foreground=FG,
                     indicatorbackground=BG_INPUT, focuscolor=BG_ELEVATED, padding=4)
 
-    # Notebook (tabs)
     style.configure("TNotebook", background=BG, borderwidth=0)
     style.configure("TNotebook.Tab", background=BG_ELEVATED, foreground=FG_MUTED,
                     padding=(16, 8), borderwidth=0)
@@ -165,27 +153,21 @@ def apply_theme(root: tk.Tk) -> dict:
               foreground=[("selected", FG)],
               expand=[("selected", [1, 1, 1, 0])])
 
-    # Progressbar
     style.configure("Horizontal.TProgressbar", background=ACCENT,
                     troughcolor=BG_ELEVATED, bordercolor=BG_ELEVATED,
                     lightcolor=ACCENT, darkcolor=ACCENT, thickness=8)
 
-    # Scale (slider)
     style.configure("Horizontal.TScale", background=BG, troughcolor=BG_ELEVATED)
 
-    # Scrollbar
     style.configure("Vertical.TScrollbar", background=BG_ELEVATED,
                     troughcolor=BG, bordercolor=BG, arrowcolor=FG_MUTED,
                     lightcolor=BG_ELEVATED, darkcolor=BG_ELEVATED)
 
-    # PanedWindow sash
     style.configure("TPanedwindow", background=BG)
     style.configure("Sash", sashthickness=6, gripcount=0, background=BG_ELEVATED)
 
-    # Separator
     style.configure("TSeparator", background=BORDER)
 
-    # LabelFrame (used in some legacy code paths)
     style.configure("TLabelframe", background=BG_ELEVATED, foreground=FG,
                     bordercolor=BORDER, padding=10, borderwidth=1, relief="solid")
     style.configure("TLabelframe.Label", background=BG_ELEVATED, foreground=FG, font=fonts["body_bold"])
@@ -193,11 +175,9 @@ def apply_theme(root: tk.Tk) -> dict:
     return fonts
 
 
-# --- Convenience widgets ---------------------------------------------------
+# --- Convenience widgets --------------------------------------------------
 def card(parent: tk.Misc, padding: int = 14, **kwargs) -> ttk.Frame:
-    """A styled panel with elevated background and inner padding."""
-    frame = ttk.Frame(parent, style="Card.TFrame", padding=padding, **kwargs)
-    return frame
+    return ttk.Frame(parent, style="Card.TFrame", padding=padding, **kwargs)
 
 
 def section_heading(parent: tk.Misc, text: str, on_card: bool = False) -> ttk.Label:
@@ -209,9 +189,7 @@ def hsep(parent: tk.Misc) -> ttk.Separator:
 
 
 def status_pill(parent: tk.Misc) -> ttk.Label:
-    """Status indicator. Update via set_status()."""
-    label = ttk.Label(parent, text="● Idle", style="StatusIdle.TLabel")
-    return label
+    return ttk.Label(parent, text="● Idle", style="StatusIdle.TLabel")
 
 
 def set_status(label: ttk.Label, kind: str, text: str) -> None:
@@ -225,7 +203,6 @@ def set_status(label: ttk.Label, kind: str, text: str) -> None:
     label.configure(text=f"● {text}", style=style)
 
 
-# Re-export for convenience
 __all__ = [
     "BG", "BG_ELEVATED", "BG_INPUT", "FG", "FG_MUTED",
     "ACCENT", "ACCENT_HOVER", "SUCCESS", "WARNING", "DANGER", "BORDER",

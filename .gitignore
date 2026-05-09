@@ -143,3 +143,6 @@ Tempqrl_test_folder/
 Tempqrl_test_grid/
 Tempqrl_test_out/
 Tempqrl_test_single/
+
+# claude
+.claude/

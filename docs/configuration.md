@@ -1,6 +1,6 @@
 # Configuration files
 
-Both the server and client support YAML and JSON configuration files. Settings in a config file are overridden by CLI flags when both are present.
+The Python client supports YAML and JSON configuration files. Settings in a config file are overridden by CLI flags when both are present.
 
 ---
 
@@ -8,20 +8,6 @@ Both the server and client support YAML and JSON configuration files. Settings i
 
 Files are searched in this order; the first one found is loaded:
 
-**Server:**
-```
-./qrl_server.yaml
-./qrl_server.yml
-./qrl_server.json
-./config/qrl_server.yaml
-./config/qrl_server.yml
-./config/qrl_server.json
-~/.qrl/server_config.yaml
-~/.qrl/server_config.yml
-~/.qrl/server_config.json
-```
-
-**Client:**
 ```
 ./qrl_client.yaml
 ./qrl_client.yml
@@ -35,45 +21,6 @@ Files are searched in this order; the first one found is loaded:
 ```
 
 Pass `--config <path>` to load a specific file instead.
-
----
-
-## Server config reference
-
-```yaml
-# ── Chunking ──────────────────────────────────────────────────────────────────
-chunk_size: 1490            # bytes per QR payload
-                            # max depends on error_correction:
-                            #   L → 2670  M → 2110  Q → 1490  H → 1140
-error_correction: Q         # L | M | Q | H
-compression_level: 6        # gzip level 1–9; 0 disables compression entirely
-
-# ── Display ───────────────────────────────────────────────────────────────────
-duration: 0.1               # seconds per frame  (0.033 ≈ 30 fps)
-repeat: true                # loop the QR sequence until manually stopped
-
-# ── QR rendering ──────────────────────────────────────────────────────────────
-qr_box_size: 10             # pixels per QR module  (10 = standard, 16 = high, 24 = extra)
-qr_border: 6                # quiet-zone width in modules
-qr_grid_cols: 1             # display grid width  (cols × rows = parallel streams)
-qr_grid_rows: 1             # display grid height (1×1 = single QR, 2×4 = 8 streams, etc.)
-qr_grid_auto: false         # ignore cols/rows and fit as many cells as the screen allows
-
-# ── Limits ────────────────────────────────────────────────────────────────────
-max_file_size: 104857600    # 100 MB hard cap; raise for larger files
-```
-
-### Generating an example file
-
-```bash
-qrl-server --create-config config/server.yaml
-```
-
-### Saving the current CLI settings
-
-```bash
-qrl-server myfile.bin --chunk-size 1490 --duration 0.1 --save-config my_settings.yaml
-```
 
 ---
 
@@ -102,18 +49,15 @@ qrl-client --create-config config/client.yaml
 ## Using a config file
 
 ```bash
-# Server
-qrl-server --config config/server.yaml myfile.bin
-
-# Client
+# Use a saved config
 qrl-client --config config/client.yaml
 
-# CLI flags override config values
-qrl-server --config config/server.yaml --duration 0.033 myfile.bin
+# CLI flags override config file values
+qrl-client --config config/client.yaml --interval 0.033 --monitor 1
 ```
 
 ---
 
 ## Validation
 
-Both config managers validate the loaded values and raise a descriptive error if any are out of range (e.g., `chunk_size` exceeds the maximum for the chosen `error_correction` level, or `monitor` is not a valid index). Validation runs before encoding or capture starts, not at load time.
+The config manager validates all values before capture starts and raises a descriptive error if any are out of range (e.g. `monitor` is not a valid index, `interval` is non-positive). Validation runs at startup, not at load time.
