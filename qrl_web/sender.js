@@ -286,9 +286,12 @@ async function renderFrame() {
   fpsAvg = frameCount < 5 ? fpsAvg : Math.round(10000 / elapsed) / 10;
 
   document.getElementById('chunkLabel').innerHTML =
-    isManifest ? '<span>MANIFEST</span>' : `chunk <span>${frameLabel}</span>`;
+    isManifest ? '<span>MANIFEST</span>'
+    : isFountain ? `fountain <span>${frameLabel}</span>`
+    : `chunk <span>${frameLabel}</span>`;
   document.getElementById('sFrame').textContent = isManifest ? 'M' : (frameSeq !== null ? frameSeq + 1 : '—');
-  document.getElementById('sCycles').textContent = replayChunks !== null ? replayCycles : (isFountain ? '—' : cycleCount);
+  const fountainCycles = isFountain ? Math.floor(fountainSeed / framedChunks.length) : 0;
+  document.getElementById('sCycles').textContent = replayChunks !== null ? replayCycles : (isFountain ? fountainCycles : cycleCount);
   document.getElementById('sFps').textContent = frameCount < 3 ? '…' : fpsAvg;
   const pct = isManifest ? 0 : replayChunks !== null
     ? Math.round((replayPos / replayChunks.length) * 100)
