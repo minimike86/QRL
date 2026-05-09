@@ -98,6 +98,8 @@
   @media (hover: hover) {
     .setting:hover .setting-hint { display: block; }
     .setting:hover .hint-badge { color: #666; border-color: #666; }
+    /* Right-column settings (2nd, 4th, 6th) — anchor tooltip to right edge so it opens leftward */
+    .setting:nth-child(even) .setting-hint { left: auto; right: 0; }
   }
 
   /* ── Status & actions ───────────────────────────────────────────────────── */
