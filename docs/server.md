@@ -1,133 +1,112 @@
-# Server
+# Web Sender
 
-The server encodes a file or folder into a sequence of QR codes and flashes them on screen.
+The web sender encodes a file or folder into a sequence of QR codes and displays them in the browser at a configurable frame rate. No installation required.
 
-## Launching
-
-```bash
-# GUI
-python -m qrl_server --gui
-
-# Headless CLI
-qrl-server myfile.bin
-```
+**Open at:** https://minimike86.github.io/QRL/qrl_web/sender.html  
+**Or locally:** `cd qrl_web && python -m http.server 8765` → http://localhost:8765/sender.html
 
 ---
 
-## GUI walkthrough
+## Workflow
 
-### 1. File or folder
+1. **Select a file or folder** using the file or folder picker buttons.
+2. **Adjust settings** as needed (see below). The ETA estimate updates live.
+3. **Press Start Transfer.** The manifest QR appears first and the sender auto-pauses.
+4. **Open the receiver** on the destination device and start its camera.
+5. **Press Resume** on the sender when the receiver is ready. QR codes begin cycling.
+6. The receiver auto-downloads the file when the transfer completes.
 
-Pick a source with the **File…** or **Folder…** buttons, or drag-and-drop onto the panel (requires `tkinterdnd2`).
-
-- **File** — encoded as-is (after optional compression).
-- **Folder** — recursively tar-archived first. The client detects the tar and extracts it into a subdirectory automatically.
-
-The file size and type are shown below the picker.
-
----
-
-### 2. Display speed
-
-Controls how quickly frames advance. Faster sends more data per second but the client must be able to decode a QR within one frame interval.
-
-| Preset | FPS | Frame interval |
-|--------|-----|----------------|
-| Slow | 2 | 500 ms |
-| Balanced | 10 | 100 ms |
-| Fast | 20 | 50 ms |
-| Max | 30 | 33 ms |
-
-The active preset is highlighted. Selecting a new preset takes effect on the next **Prepare**.
+In sequential mode, if the receiver reports missing chunks, enter them in the **Replay missing chunks** field and press **Replay** to re-transmit only those chunks.
 
 ---
 
-### 3. QR quality
+## Settings
 
-Trades bytes per QR against resistance to scan errors. Higher error correction uses more redundancy, leaving less room for payload.
+### Chunk size (bytes)
 
-| Preset | Error correction | Chunk size | Use when… |
-|--------|-----------------|------------|-----------|
-| Maximum throughput | L | 2670 B | Clean local screen |
-| Balanced | Q | 1490 B | General use |
-| Robust | H | 1140 B | Compressed RDP/VNC stream |
+Payload bytes per QR frame. Default: **600 B**.
 
----
+- Smaller values produce more reliable, lower-density QR codes that are easier to scan.
+- Larger values reduce the total number of frames (faster transfers in ideal conditions).
+- Recommended range: 400–800 B. Reduce if codes fail to scan consistently.
 
-### 4. Pixel density
+### FPS
 
-Pixels rendered per QR module (the black/white cells). Higher density produces larger, crisper codes that pyzbar can lock onto even after codec compression.
+Target frames per second. Default: **3**.
 
-| Preset | px / module | Native QR size (approx) |
-|--------|------------|------------------------|
-| Standard | 10 | ~370 px |
-| High | 16 | ~590 px |
-| Extra | 24 | ~885 px |
+- Higher FPS transfers faster but the receiver camera must keep up.
+- 3–5 fps is reliable in most lighting; increase only in good conditions.
+- The sender displays actual FPS alongside the target.
 
-Use **High** or **Extra** when the client is reading through a remote desktop connection.
+### Error correction
 
----
+Reed-Solomon redundancy baked into each QR code. Default: **L**.
 
-### 5. Throughput mode
+| Level | Redundancy | Notes |
+|-------|-----------|-------|
+| L | 7% | Maximum payload capacity. Use in clean, direct lighting. |
+| M | 15% | Light noise tolerance. |
+| Q | 25% | Good for compressed remote desktop streams. |
+| H | 30% | Maximum robustness. Use when scanning through heavy compression. |
 
-Displays multiple independent QR streams simultaneously in a grid, multiplying throughput by the number of cells.
+Higher levels recover from more scan noise but reduce usable payload per frame, increasing chunk count.
 
-| Mode | Streams | Grid |
-|------|---------|------|
-| Single stream | 1 | 1×1 |
-| 2×2 grid | 4 | 2×2 |
-| 3×3 grid | 9 | 3×3 |
-| 4×4 grid | 16 | 4×4 |
-| Auto-fit screen | varies | fills monitor |
+### QR size (px)
 
-**Auto-fit** computes the largest grid where each QR is at least 400 px wide on the current monitor, recalculated at display start.
+Rendered canvas size in pixels. Default: **420 px**.
 
----
+- Larger codes are easier to scan from a distance or through a low-resolution camera.
+- 420–600 px suits most setups. Increase if the receiver struggles to focus.
 
-### 6. Prepare
+### Frames per chunk
 
-Splits the file into chunks, initialises the encoder, and kicks off background QR prefetch. For most files this completes in under a second. The activity log shows compression ratio and chunk count.
+How many consecutive frames each chunk is held before advancing. Default: **1** (sequential mode only).
 
----
+- Set to 2–3 if the receiver is missing many chunks at your configured FPS.
+- ETA scales proportionally with this setting.
 
-### 7. Start display
+### Fountain mode
 
-Opens a dedicated fullscreen QR display window on the same monitor as the server GUI. A manifest QR appears first on every cycle; data QRs follow.
+When enabled, the sender generates an **infinite stream of XOR-coded packets** (LT codes) instead of cycling through sequential chunks. Default: **off**.
 
-- **Esc** — close the display window.
-- **F11** — toggle fullscreen.
+**Use fountain mode when:**
+- Scanning is intermittent or unreliable.
+- You want hands-off operation with no replay step.
+- The receiver may join late.
 
-The progress bar and cycle counter update live.
+**Sequential mode** is preferable when the transfer environment is stable and you want predictable chunk-by-chunk progress with a clear completion point.
 
----
-
-### 8. Stop
-
-Stops the display loop and closes the QR window. The encoded data remains in memory; you can restart display without re-encoding.
+See [ARCHITECTURE.md](ARCHITECTURE.md#fountain-coding) for the technical details.
 
 ---
 
-### 9. Export
+## Display panel
 
-Available after **Prepare**.
+The right-hand panel shows the current QR code alongside live statistics:
 
-- **Export PDF…** — saves all QR frames as a multi-page PDF (150 DPI). Useful for sharing the stream offline or printing.
-- **Export video…** — saves as MP4 at the configured FPS using OpenCV. Requires `opencv-python` with a working `mp4v` codec.
+| Stat | Description |
+|------|-------------|
+| **FRAME** | Current chunk number (sequential) or packet number (fountain) |
+| **TOTAL CHUNKS** | Total source chunks N |
+| **CYCLES** | Sequential: full loops completed. Fountain: equivalent packet-sets sent. |
+| **ACTUAL FPS** | Measured frame rate |
+| Progress bar | Sequential: position in current cycle. Fountain: position within current cycle (wraps). |
+| Chunk label | `chunk N / total` (sequential) or `fountain pkt N` (fountain) |
 
----
-
-## Settings summary panel
-
-The right-hand panel shows a live one-line summary of the current settings:
-
-```
-myfile.bin  ·  4.23 MB  ·  1490 B/QR @ 10 FPS × 2×2 grid  →  ~58.2 KB/s
-```
-
-Stats grid shows **Chunks**, **Bytes / QR**, **Throughput**, and **Cycle** once display is running.
+The manifest frame is labelled **MANIFEST** and appears first. The sender pauses here automatically.
 
 ---
 
-## Activity log
+## Compression
 
-Timestamped log of every significant event — encoding completion, compression ratio, QR generation progress (logged at each 10% decile), and display errors. Use **Clear** to reset it, or watch it to confirm the prefetch thread is keeping up.
+Compression runs automatically before chunking:
+
+- Files ≥ 256 bytes are gzip-compressed at level 6.
+- If the result is ≥ 95% of the original size (e.g. already-compressed JPEG, ZIP, MP4), the original is sent uncompressed.
+- The manifest records whether compression was applied; the receiver decompresses transparently.
+
+---
+
+## Folder transfers
+
+Select a folder with **Select Folder**. The sender packs the entire directory into a `.zip` archive in memory before chunking. The web receiver downloads the `.zip`; the Python client unpacks it automatically.
